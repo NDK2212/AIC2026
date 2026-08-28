@@ -48,19 +48,27 @@ def _env(name: str) -> str | None:
     return value.strip() if value and value.strip() else None
 
 
+_DETECTED_DEVICE: str | None = None
+
+
 def resolve_device(spec: str) -> str:
     """Turn ``"auto"`` into the best device actually available on this machine."""
+    global _DETECTED_DEVICE
     if spec and spec != "auto":
         return spec
+    if _DETECTED_DEVICE is not None:
+        return _DETECTED_DEVICE
     try:
         import torch
-    except ImportError:  # pragma: no cover - torch missing means CPU-only tooling
-        return "cpu"
-    if torch.cuda.is_available():
-        return "cuda"
-    if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
+        if torch.cuda.is_available():
+            _DETECTED_DEVICE = "cuda"
+        elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+            _DETECTED_DEVICE = "mps"
+        else:
+            _DETECTED_DEVICE = "cpu"
+    except ImportError:
+        _DETECTED_DEVICE = "cpu"
+    return _DETECTED_DEVICE
 
 
 # ---------------------------------------------------------------------------

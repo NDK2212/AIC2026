@@ -50,16 +50,33 @@ class SigLIPTextEncoder(TextEncoder):
                 "transformers is not installed - run `pip install -r requirements.txt`"
             ) from exc
 
+        import os
+        cache_hub = None
+        for env_k in ("HF_HUB_CACHE", "HF_HOME", "TRANSFORMERS_CACHE"):
+            val = os.environ.get(env_k)
+            if val:
+                p = os.path.join(val, "hub") if not val.endswith("hub") else val
+                if os.path.isdir(p):
+                    cache_hub = p
+                    break
+        kw: dict[str, Any] = {}
+        if cache_hub:
+            kw["cache_dir"] = cache_hub
+
         try:
-            self._tokenizer = AutoTokenizer.from_pretrained(self.cfg.model_id)
-            dtype = self._torch.float16 if (self.cfg.device != "cpu" and self._torch.cuda.is_available()) else self._torch.float32
-            model = AutoModel.from_pretrained(self.cfg.model_id, torch_dtype=dtype)
+            self._tokenizer = AutoTokenizer.from_pretrained(self.cfg.model_id, **kw)
+            model = AutoModel.from_pretrained(self.cfg.model_id, **kw)
         except Exception as exc:  # noqa: BLE001
             raise EncoderUnavailable(
                 f"Could not load SigLIP model {self.cfg.model_id!r}: {exc}"
             ) from exc
 
-        model.eval().to(self.cfg.device)
+        if str(self.cfg.device).lower() not in ("cpu", "auto"):
+            try:
+                model.to(self.cfg.device)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Could not move SigLIP to %s: %s", self.cfg.device, exc)
+        model.eval()
         self._model = model
 
         hidden = _declared_text_dim(model)

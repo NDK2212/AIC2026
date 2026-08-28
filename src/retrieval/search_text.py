@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Sequence
 
 from ..clients.elastic import ElasticWrapper
 from ..config import ElasticConfig
@@ -62,7 +62,7 @@ class TextSearcher:
     ) -> list[Candidate]:
         """Search the dense natural language description field."""
         return self._search(
-            field=self.cfg.fields.get("description", "description_text"),
+            field=self.cfg.fields.get("description", "frame_description"),
             source=PATH_DESCRIPTION,
             query=query,
             terms=terms or [],

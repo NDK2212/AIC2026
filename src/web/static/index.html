@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AIC 2026 - Interactive Video Retrieval Engine</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body class="dark-theme">
+
+  <!-- APP WRAPPER -->
+  <div id="app" class="app-container">
+
+    <!-- TOP HEADER -->
+    <header class="header glass-panel">
+      <div class="header-left">
+        <div class="logo-badge">
+          <span class="logo-icon">⚡</span>
+          <div class="logo-text">
+            <span class="brand-title">AIC 2026</span>
+            <span class="brand-subtitle">RETRIEVAL PLATFORM</span>
+          </div>
+        </div>
+
+        <!-- TASK SELECTOR TABS -->
+        <nav class="task-tabs" id="taskSelector">
+          <button class="task-tab active" data-task="kis" id="tabKis">
+            <span class="tab-icon">🎯</span>
+            <span class="tab-label">KIS</span>
+            <span class="tab-desc">Known-Item</span>
+          </button>
+          <button class="task-tab" data-task="vqa" id="tabVqa">
+            <span class="tab-icon">💬</span>
+            <span class="tab-label">VQA</span>
+            <span class="tab-desc">Question & Answer</span>
+          </button>
+          <button class="task-tab" data-task="trake" id="tabTrake">
+            <span class="tab-icon">⏱️</span>
+            <span class="tab-label">TRAKE</span>
+            <span class="tab-desc">Action Sequence</span>
+          </button>
+        </nav>
+      </div>
+
+      <div class="header-right">
+        <!-- SYSTEM STATUS BADGES -->
+        <div class="system-status" id="systemStatus">
+          <div class="status-indicator online" id="statusEs" title="Elasticsearch">
+            <span class="dot"></span>
+            <span class="label">ES</span>
+          </div>
+          <div class="status-indicator online" id="statusQdrant" title="Qdrant Vector DB">
+            <span class="dot"></span>
+            <span class="label">Qdrant</span>
+          </div>
+          <div class="status-indicator online" id="statusMinio" title="MinIO S3 Keyframes">
+            <span class="dot"></span>
+            <span class="label">MinIO</span>
+          </div>
+          <div class="status-indicator online" id="statusKeys" title="NVIDIA Key Pool">
+            <span class="dot"></span>
+            <span class="label" id="keysCountLabel">1 Key</span>
+          </div>
+        </div>
+
+        <!-- SETTINGS BUTTON -->
+        <button class="btn btn-icon btn-glass" id="btnToggleSettings" title="Tùy chỉnh Thông số & API Keys">
+          <span class="btn-icon-symbol">⚙️</span>
+          <span>Cấu hình & Keys</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- PARAMETERS & SETTINGS DRAWER -->
+    <aside class="settings-drawer glass-panel" id="settingsDrawer">
+      <div class="drawer-header">
+        <h3>🎛️ Bảng Điều Khiển Toàn Quyền (Master Control Panel)</h3>
+        <button class="btn-close" id="btnCloseSettings">✕</button>
+      </div>
+
+      <div class="drawer-tabs">
+        <button class="d-tab active" data-dtab="keys">🔑 NVIDIA API Pool</button>
+        <button class="d-tab" data-dtab="paths">🧭 4 Nhánh Retrieval</button>
+        <button class="d-tab" data-dtab="rerank">🔄 Reranker BLIP/BGE</button>
+        <button class="d-tab" data-dtab="task-cfg">🎯 Tùy chỉnh Task</button>
+        <button class="d-tab" data-dtab="diversity">🎞️ Phân cảnh & Mở rộng</button>
+      </div>
+
+      <div class="drawer-content">
+
+        <!-- TAB 1: NVIDIA API KEY POOL -->
+        <div class="d-tab-pane active" id="pane-keys">
+          <div class="cfg-section">
+            <h4>Danh sách NVIDIA NIM API Keys (Tự động Round-Robin & Failover)</h4>
+            <p class="cfg-desc">Nhập 1 hoặc nhiều API keys (mỗi key trên 1 dòng hoặc cách nhau bởi dấu phẩy). Khi có lỗi 429/503, hệ thống sẽ tự động chuyển sang key khác ngay lập tức.</p>
+            <textarea id="inputApiKeys" class="input-textarea" rows="4" placeholder="nvapi-xxxx1&#10;nvapi-xxxx2&#10;nvapi-xxxx3"></textarea>
+            <div class="btn-row">
+              <button class="btn btn-primary btn-sm" id="btnSaveKeys">💾 Lưu & Kích hoạt Keys</button>
+              <span class="save-status-msg" id="keySaveStatus"></span>
+            </div>
+            <div class="key-chips-list" id="activeKeyChips"></div>
+          </div>
+        </div>
+
+        <!-- TAB 2: 4-PATH RETRIEVAL & FUSION WEIGHTS -->
+        <div class="d-tab-pane" id="pane-paths">
+          <div class="cfg-grid-2">
+            <div class="cfg-card">
+              <div class="cfg-toggle-row">
+                <label class="toggle-switch">
+                  <input type="checkbox" id="chkPathOcr" checked>
+                  <span class="slider round"></span>
+                </label>
+                <span class="cfg-title">Nhánh OCR (Chữ màn hình)</span>
+              </div>
+              <div class="slider-row">
+                <label>Trọng số $W_{ocr}$:</label>
+                <input type="range" id="rngWeightOcr" min="0" max="3.0" step="0.1" value="1.0">
+                <span class="val-badge" id="valWeightOcr">1.0</span>
+              </div>
+            </div>
+
+            <div class="cfg-card">
+              <div class="cfg-toggle-row">
+                <label class="toggle-switch">
+                  <input type="checkbox" id="chkPathAsr" checked>
+                  <span class="slider round"></span>
+                </label>
+                <span class="cfg-title">Nhánh ASR (Lời thoại âm thanh)</span>
+              </div>
+              <div class="slider-row">
+                <label>Trọng số $W_{asr}$:</label>
+                <input type="range" id="rngWeightAsr" min="0" max="3.0" step="0.1" value="1.0">
+                <span class="val-badge" id="valWeightAsr">1.0</span>
+              </div>
+            </div>
+
+            <div class="cfg-card">
+              <div class="cfg-toggle-row">
+                <label class="toggle-switch">
+                  <input type="checkbox" id="chkPathDesc" checked>
+                  <span class="slider round"></span>
+                </label>
+                <span class="cfg-title">Nhánh Description (Mô tả cảnh)</span>
+              </div>
+              <div class="slider-row">
+                <label>Trọng số $W_{desc}$:</label>
+                <input type="range" id="rngWeightDesc" min="0" max="3.0" step="0.1" value="1.2">
+                <span class="val-badge" id="valWeightDesc">1.2</span>
+              </div>
+            </div>
+
+            <div class="cfg-card">
+              <div class="cfg-toggle-row">
+                <label class="toggle-switch">
+                  <input type="checkbox" id="chkPathVis" checked>
+                  <span class="slider round"></span>
+                </label>
+                <span class="cfg-title">Nhánh Visual (Vector Qdrant)</span>
+              </div>
+              <div class="slider-row">
+                <label>Trọng số $W_{vis}$:</label>
+                <input type="range" id="rngWeightVis" min="0" max="3.0" step="0.1" value="1.5">
+                <span class="val-badge" id="valWeightVis">1.5</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="cfg-section mt-3">
+            <h4>Thuật toán Fusion & Trọng số Động</h4>
+            <div class="cfg-grid-3">
+              <div class="form-group">
+                <label>Phương thức Fusion:</label>
+                <select id="selFusionMethod" class="input-select">
+                  <option value="weighted_rrf" selected>Weighted RRF (Reciprocal Rank Fusion)</option>
+                  <option value="rrf">Standard RRF</option>
+                  <option value="weighted_norm">Weighted Score Norm</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>Hằng số $K_{rrf}$:</label>
+                <input type="number" id="numRrfK" class="input-number" value="60" min="1" max="200">
+              </div>
+              <div class="form-group">
+                <label>Adaptive LLM Weights:</label>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="chkAdaptiveWeights" checked>
+                  <span class="slider round"></span>
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- TAB 3: RERANKERS -->
+        <div class="d-tab-pane" id="pane-rerank">
+          <div class="cfg-grid-2">
+            <div class="cfg-card">
+              <div class="cfg-toggle-row">
+                <label class="toggle-switch">
+                  <input type="checkbox" id="chkBlipRerank" checked>
+                  <span class="slider round"></span>
+                </label>
+                <span class="cfg-title">BLIP-1 Visual ITM Reranker</span>
+              </div>
+              <p class="cfg-desc">Đối sánh ngữ nghĩa Image-Text Matching trực tiếp trên ảnh keyframe sau Qdrant.</p>
+              <div class="slider-row">
+                <label>Top-N ảnh rerank:</label>
+                <input type="range" id="rngBlipTopN" min="5" max="50" step="5" value="25">
+                <span class="val-badge" id="valBlipTopN">25</span>
+              </div>
+              <div class="slider-row">
+                <label>Trọng số $W_{blip}$:</label>
+                <input type="range" id="rngBlipWeight" min="0" max="2.0" step="0.1" value="1.0">
+                <span class="val-badge" id="valBlipWeight">1.0</span>
+              </div>
+            </div>
+
+            <div class="cfg-card">
+              <div class="cfg-toggle-row">
+                <label class="toggle-switch">
+                  <input type="checkbox" id="chkBgeRerank" checked>
+                  <span class="slider round"></span>
+                </label>
+                <span class="cfg-title">BGE Cross-Encoder Text Reranker</span>
+              </div>
+              <p class="cfg-desc">Tái xếp hạng sâu candidate văn bản (Description + OCR + ASR).</p>
+              <div class="slider-row">
+                <label>Top-N text rerank:</label>
+                <input type="range" id="rngBgeTopN" min="5" max="50" step="5" value="25">
+                <span class="val-badge" id="valBgeTopN">25</span>
+              </div>
+              <div class="slider-row">
+                <label>Trọng số $W_{bge}$:</label>
+                <input type="range" id="rngBgeWeight" min="0" max="2.0" step="0.1" value="0.8">
+                <span class="val-badge" id="valBgeWeight">0.8</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- TAB 4: TASK SPECIFIC CONFIG (VQA & TRAKE) -->
+        <div class="d-tab-pane" id="pane-task-cfg">
+          <div class="cfg-section">
+            <h4>💬 Tùy chỉnh Chế độ VQA (Video Question Answering)</h4>
+            <div class="vqa-mode-selector">
+              <label class="radio-card active" id="lblVqaTextMode">
+                <input type="radio" name="vqaModeRadio" value="text_only" checked>
+                <div class="radio-body">
+                  <span class="radio-title">⚡ Không Dùng Ảnh (Text & Metadata Only)</span>
+                  <span class="radio-desc">Suy luận siêu tốc (&lt;2s) qua Nemotron-3-Ultra dựa trên Dense Caption, chữ OCR và lời thoại ASR từ Elasticsearch.</span>
+                </div>
+              </label>
+              <label class="radio-card" id="lblVqaVisionMode">
+                <input type="radio" name="vqaModeRadio" value="vision">
+                <div class="radio-body">
+                  <span class="radio-title">👁️ Dùng Ảnh (VLM Multimodal: Vision + Metadata)</span>
+                  <span class="radio-desc">Stream ảnh keyframe và gửi cho mô hình thị giác Llama-3.2-90B-Vision để trả lời chi tiết màu sắc, đếm người, vật thể.</span>
+                </div>
+              </label>
+            </div>
+            <div class="slider-row mt-2">
+              <label>Số lượng đại diện VLM (`vlm_top_n`):</label>
+              <input type="range" id="rngVlmTopN" min="5" max="50" step="5" value="25">
+              <span class="val-badge" id="valVlmTopN">25</span>
+            </div>
+            <div class="cfg-toggle-row mt-2">
+              <label class="toggle-switch">
+                <input type="checkbox" id="chkVqaPropagate" checked>
+                <span class="slider round"></span>
+              </label>
+              <span class="cfg-title">Majority Vote Propagation (Lan truyền câu trả lời cho cùng phân cảnh)</span>
+            </div>
+          </div>
+
+          <div class="cfg-section mt-3">
+            <h4>⏱️ Tùy chỉnh Task TRAKE (Temporal Action DP)</h4>
+            <div class="cfg-grid-3">
+              <div class="form-group">
+                <label>Top-K mỗi step:</label>
+                <input type="number" id="numTrakeTopk" class="input-number" value="150">
+              </div>
+              <div class="form-group">
+                <label>Coverage Bonus:</label>
+                <input type="number" id="numCoverageBonus" class="input-number" step="0.1" value="0.5">
+              </div>
+              <div class="form-group">
+                <label>Miss Penalty:</label>
+                <input type="number" id="numMissPenalty" class="input-number" step="0.05" value="-0.35">
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- TAB 5: DIVERSITY & NEIGHBOR EXPANSION -->
+        <div class="d-tab-pane" id="pane-diversity">
+          <div class="cfg-grid-2">
+            <div class="form-group">
+              <label>Shot Window (Khoảng cách frame cùng cảnh):</label>
+              <input type="number" id="numShotWindow" class="input-number" value="60">
+            </div>
+            <div class="form-group">
+              <label>Top Diverse Shots (Bắt buộc ở top đầu):</label>
+              <input type="number" id="numTopDiverse" class="input-number" value="8">
+            </div>
+            <div class="form-group">
+              <label>Max Frames Per Video ở Top đầu:</label>
+              <input type="number" id="numHeadMaxPerVideo" class="input-number" value="3">
+            </div>
+            <div class="form-group">
+              <label>Mở rộng lân cận (Neighbor Expansion):</label>
+              <label class="toggle-switch">
+                <input type="checkbox" id="chkNeighborExpansion" checked>
+                <span class="slider round"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <div class="drawer-footer">
+        <button class="btn btn-outline btn-sm" id="btnResetDefaults">🔄 Khôi phục Mặc định (Reset)</button>
+        <button class="btn btn-primary btn-sm" id="btnApplySettings">✅ Áp dụng Cấu hình</button>
+      </div>
+    </aside>
+
+    <!-- MAIN CONTENT AREA -->
+    <main class="main-content">
+
+      <!-- QUERY INPUT SECTION -->
+      <section class="query-section glass-panel">
+        <div class="query-header">
+          <span class="query-prompt-label">CÂU TRUY VẤN / CÂU HỎI (<span id="currentTaskBadge">KIS</span>):</span>
+          <div class="query-presets" id="presetQueries">
+            <!-- Dynamic preset chips will be rendered here -->
+          </div>
+        </div>
+
+        <div class="query-input-bar">
+          <input type="text" id="inputQuery" class="input-main" placeholder="Nhập câu truy vấn mô tả cảnh, biển chữ OCR, câu hỏi VQA hoặc chuỗi hành động TRAKE..." autocomplete="off">
+          <div class="query-actions">
+            <label class="cache-toggle" title="Sử dụng cache LLM/Qdrant để tăng tốc độ phản hồi">
+              <input type="checkbox" id="chkUseCache" checked>
+              <span>Cache</span>
+            </label>
+            <button class="btn btn-search" id="btnSearch">
+              <span class="search-icon">🔍</span>
+              <span class="search-text">TÌM KIẾM</span>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- REAL-TIME PIPELINE EXECUTION MONITOR -->
+      <section class="pipeline-monitor glass-panel" id="pipelineMonitor" style="display: none;">
+        <div class="monitor-header">
+          <div class="monitor-title">
+            <span class="pulse-indicator"></span>
+            <span>TIẾN TRÌNH THỰC THI PIPELINE THỜI GIAN THỰC</span>
+          </div>
+          <div class="monitor-elapsed" id="monitorElapsed">Thời gian: 0.0s</div>
+        </div>
+
+        <div class="pipeline-steps-tracker" id="pipelineSteps">
+          <div class="p-step" id="step-decomp">
+            <div class="step-num">1</div>
+            <div class="step-content">
+              <div class="step-name">Query Decomposition</div>
+              <div class="step-detail" id="stepDetailDecomp">Đang phân tích câu hỏi...</div>
+            </div>
+          </div>
+          <div class="p-step" id="step-retrieval">
+            <div class="step-num">2</div>
+            <div class="step-content">
+              <div class="step-name">4-Path Retrieval</div>
+              <div class="step-detail" id="stepDetailRetrieval">Chạy song song OCR, ASR, Description, Visual...</div>
+            </div>
+          </div>
+          <div class="p-step" id="step-rerank">
+            <div class="step-num">3</div>
+            <div class="step-content">
+              <div class="step-name">Reranking & Fusion</div>
+              <div class="step-detail" id="stepDetailRerank">BLIP-1 / BGE & Weighted RRF Fusion...</div>
+            </div>
+          </div>
+          <div class="p-step" id="step-post">
+            <div class="step-num">4</div>
+            <div class="step-content">
+              <div class="step-name">Postprocessing / Answering</div>
+              <div class="step-detail" id="stepDetailPost">Shot diversity & Trả lời tác vụ...</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- DECOMPOSITION LIVE CARD -->
+        <div class="decomp-details-card" id="decompDetailsCard" style="display: none;">
+          <div class="decomp-grid">
+            <div class="d-item"><span class="d-label">Bản dịch / Visual Prompt:</span> <span class="d-val" id="decValVisual">-</span></div>
+            <div class="d-item"><span class="d-label">Từ khóa OCR:</span> <span class="d-val" id="decValOcr">-</span></div>
+            <div class="d-item"><span class="d-label">Từ khóa ASR:</span> <span class="d-val" id="decValAsr">-</span></div>
+            <div class="d-item"><span class="d-label">Trọng số Modality:</span> <span class="d-val" id="decValWeights">-</span></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- RESULTS TOOLBAR -->
+      <section class="results-toolbar glass-panel" id="resultsToolbar" style="display: none;">
+        <div class="toolbar-left">
+          <span class="results-count-badge" id="resultsCount">0 Kết quả</span>
+          <span class="pinned-notice" id="pinnedNotice" style="display: none;">⭐ Đã đẩy 1 frame lên Top 1</span>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-success btn-export" id="btnExportCsv">
+            <span class="export-icon">📥</span>
+            <span>XUẤT FILE CSV NỘP BÀI AIC 2026</span>
+          </button>
+        </div>
+      </section>
+
+      <!-- RESULTS GALLERY (KIS / VQA / TRAKE) -->
+      <section class="results-gallery" id="resultsGallery">
+        <div class="empty-state" id="emptyState">
+          <div class="empty-icon">🎬</div>
+          <div class="empty-title">Sẵn sàng tìm kiếm</div>
+          <div class="empty-desc">Chọn tác vụ (KIS, VQA, TRAKE), nhập câu hỏi hoặc chọn mẫu câu hỏi bên trên và nhấn <strong>TÌM KIẾM</strong>.</div>
+        </div>
+      </section>
+
+    </main>
+
+    <!-- 25-NEIGHBOR FILMSTRIP MODAL -->
+    <div class="modal-backdrop" id="neighborModal" style="display: none;">
+      <div class="modal-container glass-panel">
+        <div class="modal-header">
+          <div class="modal-title-box">
+            <span class="modal-badge">🎞️ FILMSTRIP</span>
+            <h3 id="modalVideoTitle">Cửa sổ 25 Frame lân cận: L26_V479</h3>
+          </div>
+          <button class="btn-close" id="btnCloseNeighborModal">✕</button>
+        </div>
+
+        <div class="modal-body">
+          <div class="filmstrip-controls">
+            <span class="filmstrip-hint">💡 Sử dụng chuột cuộn ngang hoặc phím mũi tên [←] [→] để duyệt các frame liên tiếp của video này.</span>
+          </div>
+
+          <div class="filmstrip-carousel" id="neighborFilmstrip">
+            <!-- 25 neighbor cards injected here -->
+          </div>
+
+          <div class="neighbor-meta-preview" id="neighborMetaPreview">
+            <div class="meta-preview-header" id="metaFrameTitle">Frame: #3910 (Target)</div>
+            <div class="meta-preview-body" id="metaFrameBody">Chọn một frame trong dải băng phía trên để xem mô tả và chữ OCR chi tiết.</div>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button class="btn btn-outline" id="btnCloseNeighborModalFooter">Đóng</button>
+          <button class="btn btn-primary" id="btnConfirmSelectNeighbor">🎯 Chọn Frame Này Thay Thế</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- FLOATING LIVE CONSOLE LOGS TOGGLE -->
+    <button id="btnToggleTerminal" class="btn-terminal-toggle" title="Mở / Đóng Console Logs Realtime">
+      <span class="term-toggle-icon">📟</span>
+      <span class="term-toggle-text">Console Logs</span>
+      <span class="term-live-pulse" id="termLiveDot"></span>
+    </button>
+
+    <!-- LIVE CONSOLE LOGS DRAWER -->
+    <div id="liveTerminalDrawer" class="terminal-drawer">
+      <div class="terminal-header">
+        <div class="terminal-title">
+          <span class="term-icon">📟</span>
+          <span style="font-weight:700;color:var(--text-main);">REAL-TIME BACKEND CONSOLE</span>
+          <span id="termStatusBadge" class="term-status-badge">● Live Connected</span>
+        </div>
+        <div class="terminal-actions">
+          <div class="term-filters">
+            <button class="term-filter active" data-filter="ALL">ALL</button>
+            <button class="term-filter" data-filter="INFO">INFO</button>
+            <button class="term-filter" data-filter="WARNING">WARN</button>
+            <button class="term-filter" data-filter="ERROR">ERR</button>
+          </div>
+          <label class="term-toggle-label">
+            <input type="checkbox" id="chkTermAutoScroll" checked> Tự cuộn
+          </label>
+          <button id="btnTermClear" class="btn-term-action" title="Xóa màn hình">🧹 Xóa</button>
+          <button id="btnCloseTerminal" class="btn-term-action" title="Đóng console">✕</button>
+        </div>
+      </div>
+      <div id="terminalBody" class="terminal-body">
+        <div class="term-line term-info"><span class="term-time">[System]</span> <span class="term-tag info">[INFO]</span> Hệ thống Console Logs Realtime sẵn sàng kết nối...</div>
+      </div>
+    </div>
+
+  </div>
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

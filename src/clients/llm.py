@@ -119,20 +119,8 @@ class LLMClient:
             self._client = self._build_client()
         return self._client
 
-    def _build_client(self) -> Any:
-        api_key = os.environ.get(self.cfg.api_key_env, "").strip()
-        if not api_key:
-            raise ConfigError(
-                f"{self.cfg.api_key_env} is not set. Copy .env.example to .env and "
-                "fill in your API key."
-            )
-        try:
-            from langchain_nvidia_ai_endpoints import ChatNVIDIA
-        except ImportError as exc:  # pragma: no cover
-            raise ConfigError(
-                "langchain-nvidia-ai-endpoints is not installed - "
-                "run `pip install -r requirements.txt`"
-            ) from exc
+    def _get_client_for_key(self, api_key: str) -> Any:
+        from langchain_nvidia_ai_endpoints import ChatNVIDIA
 
         kwargs: dict[str, Any] = {
             "model": self.cfg.model,
@@ -145,15 +133,25 @@ class LLMClient:
             kwargs["chat_template_kwargs"] = {"enable_thinking": True}
         if self.cfg.base_url:
             kwargs["base_url"] = self.cfg.base_url
-        log.info("Initialising LLM %s", self.cfg.model)
         try:
             return ChatNVIDIA(**kwargs)
         except Exception as exc:
             if "chat_template_kwargs" in kwargs:
-                log.warning("ChatNVIDIA rejected chat_template_kwargs (%s) - retrying without it", exc)
                 kwargs.pop("chat_template_kwargs", None)
                 return ChatNVIDIA(**kwargs)
             raise
+
+    def _build_client(self) -> Any:
+        from .key_pool import GLOBAL_KEY_POOL
+        try:
+            key = GLOBAL_KEY_POOL.next_key()
+        except ValueError:
+            key = os.environ.get(self.cfg.api_key_env, "").strip()
+        if not key:
+            raise ConfigError(
+                f"{self.cfg.api_key_env} is not set. Fill in your API key in .env or via Web UI."
+            )
+        return self._get_client_for_key(key)
 
     # ------------------------------------------------------------------
     def chat(self, system: str, user: str, *, use_cache: bool = True) -> str:
@@ -225,24 +223,35 @@ class LLMClient:
 
     # ------------------------------------------------------------------
     def _invoke_with_retry(self, messages: list[dict[str, str]]) -> str:
-        """Call the model, retrying transient network / rate-limit failures."""
+        """Call the model, rotating keys on rate-limit / server overload failures."""
+        from .key_pool import GLOBAL_KEY_POOL
+        keys = GLOBAL_KEY_POOL.get_keys() or [os.environ.get(self.cfg.api_key_env, "").strip()]
         last_exc: Exception | None = None
-        for attempt in range(1, self.cfg.max_retries + 1):
+
+        total_attempts = max(self.cfg.max_retries, len(keys) * 2)
+        for attempt in range(1, total_attempts + 1):
+            key = keys[(attempt - 1) % len(keys)] if keys else ""
+            if not key:
+                raise ConfigError("No API key available")
             try:
-                response = self.client.invoke(messages)
-            except Exception as exc:  # noqa: BLE001 - provider errors are untyped
+                client = self._get_client_for_key(key)
+                response = client.invoke(messages)
+                return _response_text(response)
+            except Exception as exc:  # noqa: BLE001
                 last_exc = exc
-                if not _is_retryable(exc) or attempt == self.cfg.max_retries:
+                if not _is_retryable(exc) and attempt >= len(keys):
                     raise
-                delay = self.cfg.retry_backoff ** attempt + random.uniform(0, 0.5)
+                delay = min(self.cfg.retry_backoff ** attempt + random.uniform(0, 0.5), 10.0)
                 log.warning(
-                    "LLM call failed (attempt %d/%d): %s - retrying in %.1fs",
-                    attempt, self.cfg.max_retries, exc, delay,
+                    "LLM call failed with key ...%s (attempt %d/%d): %s - switching key and retrying in %.1fs",
+                    key[-4:] if len(key) > 4 else "key",
+                    attempt,
+                    total_attempts,
+                    exc,
+                    delay,
                 )
                 time.sleep(delay)
-                continue
-            return _response_text(response)
-        raise LLMParseError(f"LLM call failed: {last_exc}")  # pragma: no cover
+        raise LLMParseError(f"LLM call failed after {total_attempts} attempts: {last_exc}")
 
 
 def _is_retryable(exc: Exception) -> bool:

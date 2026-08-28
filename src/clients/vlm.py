@@ -67,39 +67,28 @@ class VLMClient:
         self._client: Any | None = None
 
     # ------------------------------------------------------------------
-    def _api_key(self) -> str:
-        key = os.environ.get("VLM_API_KEY", "").strip() or os.environ.get(
-            "NVIDIA_API_KEY", ""
-        ).strip()
-        if not key:
-            raise ConfigError(
-                "Neither VLM_API_KEY nor NVIDIA_API_KEY is set - the Q&A task cannot "
-                "call the vision model."
-            )
-        return key
+    def _get_client_for_key(self, api_key: str) -> Any:
+        from langchain_nvidia_ai_endpoints import ChatNVIDIA
+
+        kwargs: dict[str, Any] = {
+            "model": self.cfg.model,
+            "api_key": api_key,
+            "temperature": self.cfg.temperature,
+            "max_tokens": self.cfg.max_tokens,
+        }
+        if self.cfg.base_url:
+            kwargs["base_url"] = self.cfg.base_url
+        return ChatNVIDIA(**kwargs)
 
     @property
     def client(self) -> Any:
         """Lazily built ChatNVIDIA client (nvidia provider only)."""
-        if self._client is None:
-            try:
-                from langchain_nvidia_ai_endpoints import ChatNVIDIA
-            except ImportError as exc:  # pragma: no cover
-                raise ConfigError(
-                    "langchain-nvidia-ai-endpoints is not installed - "
-                    "run `pip install -r requirements.txt`"
-                ) from exc
-            kwargs: dict[str, Any] = {
-                "model": self.cfg.model,
-                "api_key": self._api_key(),
-                "temperature": self.cfg.temperature,
-                "max_tokens": self.cfg.max_tokens,
-            }
-            if self.cfg.base_url:
-                kwargs["base_url"] = self.cfg.base_url
-            log.info("Initialising VLM %s", self.cfg.model)
-            self._client = ChatNVIDIA(**kwargs)
-        return self._client
+        from .key_pool import GLOBAL_KEY_POOL
+        try:
+            key = GLOBAL_KEY_POOL.next_key()
+        except ValueError:
+            key = self._api_key()
+        return self._get_client_for_key(key)
 
     # ------------------------------------------------------------------
     def ask(

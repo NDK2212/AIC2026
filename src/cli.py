@@ -537,6 +537,16 @@ def _preview(rows: Sequence[Any], out: Path) -> None:
     if len(rows) > 10:
         print(f"    ... and {len(rows) - 10} more")
 
+def cmd_ui(args: argparse.Namespace, services: Services) -> int:
+    """Launch the interactive local Web UI."""
+    log.info("Launching Web UI server on port %s...", getattr(args, "port", 7860))
+    from .web.server import run_server
+    host = getattr(args, "host", "127.0.0.1")
+    port = getattr(args, "port", 7860)
+    config_path = getattr(args, "config", "config/config.yaml")
+    run_server(host=host, port=port, config_path=config_path)
+    return 0
+
 
 # ---------------------------------------------------------------------------
 # argument parsing
@@ -617,6 +627,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-validate", action="store_true",
                    help="package even if validation fails (not recommended)")
     p.set_defaults(func=cmd_pack)
+
+    p = sub.add_parser("ui", parents=[common], help="launch interactive local web UI")
+    p.add_argument("--host", default="127.0.0.1", help="host to bind (default: 127.0.0.1)")
+    p.add_argument("--port", type=int, default=7860, help="port to bind (default: 7860)")
+    p.set_defaults(func=cmd_ui)
 
     return parser
 
