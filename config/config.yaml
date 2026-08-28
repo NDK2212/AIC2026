@@ -21,7 +21,7 @@ qdrant:
   fusion: "rrf"              # "rrf" | "dbsf" | "manual"
 
 elasticsearch:
-  hosts: ["https://es.viettech.fit/"]
+  hosts: ["https://elastic.viettech.fit"]
   index: "asr_ocr_merged"     # Alias trỏ sang video_metadata_merged_v1
   user: "elastic"
   password: "1ND2kR_8MUQL_7t4G+kD"
@@ -113,7 +113,7 @@ rerank:
     batch_size: 16
     weight: 1.0
   bge:
-    enabled: true             # BGE cross-encoder rerank for text paths
+    enabled: false            # BGE cross-encoder rerank for text paths
     model_id: "BAAI/bge-reranker-v2-m3"
     device: "auto"
     top_n: 25
