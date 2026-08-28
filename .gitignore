@@ -1,0 +1,42 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Large cache and model storage
+.hf_cache/
+.pip_cache/
+outputs/cache/
+outputs/runs/
+outputs/submission/
+data/
+
+# Model weights & binaries
+*.safetensors
+*.pth
+*.pt
+*.bin
+*.onnx
+*.engine
+
+# Virtual Environments & secrets
+.env
+.venv/
+venv/
+ENV/
+
+# Testing & IDE configs
+.pytest_cache/
+.coverage
+htmlcov/
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Archives & Temporary files
+*.zip
+*.tar.gz
+*.rar
+*.log

@@ -1,0 +1,167 @@
+# ============================================================================
+# AIC 2026 - Online Search Pipeline configuration
+# Every tunable lives here. Nothing is hard-coded in the source.
+# Secrets are NEVER stored here - they come from environment / .env
+# ============================================================================
+
+qdrant:
+  url: "https://qdrant.viettech.fit/"
+  api_key: null              # Tự động nạp từ QDRANT_API_KEY trong .env
+  collection: "video_keyframes_2"
+  timeout: 60
+  vector_names:
+    siglip: "siglip"
+    beit3: "beit3"
+    qwen: "qwen"
+  payload:
+    video_id: "video_name"    # Khớp payload 'video_name' trong Qdrant
+    frame_id: "frame_id"      # Khớp payload 'frame_id' trong Qdrant
+  prefetch_limit: 300        # limit for each vector branch before fusing
+  search_limit: 200          # results returned after Qdrant-internal fusion
+  fusion: "rrf"              # "rrf" | "dbsf" | "manual"
+
+elasticsearch:
+  hosts: ["https://es.viettech.fit/"]
+  index: "asr_ocr_merged"     # Alias trỏ sang video_metadata_merged_v1
+  user: "elastic"
+  password: "1ND2kR_8MUQL_7t4G+kD"
+  timeout: 60
+  verify_certs: false
+  fields:
+    ocr: "ocr_text"           # Khớp với field OCR ocr_text trong elasticsearch.py
+    asr: "clean_text"         # Khớp với field ASR clean_text trong elasticsearch.py
+    description: "frame_description" # Khớp với frame_description trong elasticsearch.py
+    video_id: "video_id"
+    frame_id: "frame_id_ocr"  # Khớp với frame_id_ocr trong elasticsearch.py
+  size: 300
+  min_score: 0.0
+  boosts:
+    match: 2.0
+    phrase: 3.0
+    terms: 1.0
+    exact_phrase: 6.0        # used when the LLM signals an exact-text search
+  phrase_slop: 3
+
+embedding:
+  siglip:
+    enabled: true
+    backend: "transformers"                        # "transformers" | "open_clip"
+    model_id: "google/siglip-so400m-patch14-384"   # Khớp 100% với model lúc index
+    pretrained: null                               # open_clip only
+    dim: 1152
+    device: "auto"                                 # "auto" | "cuda" | "mps" | "cpu"
+    max_length: 64
+    batch_size: 16
+  beit3:
+    enabled: true
+    backend: "torchscale"                          # "torchscale" | "transformers"
+    model_id: "microsoft/beit3-large"              # BEiT-3 Multimodal Large
+    checkpoint_path: "./.hf_cache/beit3/beit3_large_patch16_224.pth"
+    tokenizer_path: "./.hf_cache/beit3/beit3.spm"
+    dim: 1024
+    device: "auto"
+    max_length: 64
+    batch_size: 16
+  qwen:
+    enabled: false
+    backend: "sentence_transformers"
+    model_id: "Qwen/Qwen3-VL-Embedding-2B"
+    dim: 2048
+    device: "auto"
+    max_length: 64
+    batch_size: 16
+
+llm:
+  provider: "nvidia"
+  model: "nvidia/nemotron-3-ultra-550b-a55b"
+  base_url: null
+  temperature: 0.1
+  top_p: 0.95
+  max_tokens: 4096
+  enable_thinking: true
+  max_retries: 4
+  retry_backoff: 2.0
+
+vlm:
+  provider: "nvidia"          # "nvidia" | "openai-compatible"
+  model: "meta/llama-3.2-90b-vision-instruct"
+  base_url: "https://integrate.api.nvidia.com/v1"
+  max_tokens: 256
+  temperature: 0.0
+  max_retries: 3
+  retry_backoff: 2.0
+  max_workers: 4
+  image_max_side: 768         # downscale before base64 to save tokens
+
+fusion:
+  method: "weighted_rrf"      # "rrf" | "weighted_rrf" | "weighted_norm"
+  rrf_k: 60
+  weights:                    # defaults used when adaptive is off
+    ocr: 1.0
+    asr: 1.0
+    description: 1.2          # Trọng số Description path
+    visual: 1.5
+  adaptive: true              # use modality_weights produced by the LLM
+  adaptive_floor: 0.2         # minimum weight, stops the LLM killing a path
+
+rerank:
+  blip2:
+    enabled: false            # BLIP-2 ITM rerank inside visual path (after Qdrant)
+    model_id: "Salesforce/blip2-itm-vit-g"
+    device: "auto"
+    top_n: 25
+    batch_size: 16
+    weight: 1.0
+  bge:
+    enabled: true             # BGE cross-encoder rerank for text paths
+    model_id: "BAAI/bge-reranker-v2-m3"
+    device: "auto"
+    top_n: 25
+    batch_size: 16
+    weight: 0.8
+
+keyframes:
+  root: "./data/keyframes"
+  map_dir: "./data/map-keyframes"
+  metadata_dir: "./data/metadata"
+  image_glob: "*.jpg"
+
+submission:
+  max_rows: 100
+  top_diverse: 8              # first N rows must come from different shots
+  head_max_per_video: 3       # ...and no more than this many from one video
+  shot_window: 60             # two frames < 60 apart count as the same shot
+  neighbor_expansion:
+    enabled: true
+    start_rank: 15            # only splice neighbours in from this rank on
+    offsets: [-15, 15, -30, 30]
+
+vqa:
+  vlm_top_n: 25               # how many candidates actually reach the VLM
+  propagate: true             # spread answers to the remaining rows
+  answer_max_chars: 100
+  fallback_answer: "unknown"
+
+trake:
+  anchor_index: 1             # 0-based -> the second step
+  per_step_topk: 150
+  max_videos: 40              # candidate videos handed to the DP
+  paths_per_video: 3          # best sequences kept per video
+  coverage_bonus: 0.5         # bonus per step that has a candidate in the video
+  miss_penalty: -0.35         # score charged for interpolating a step
+  min_gap: 1                  # frame_id must advance by at least this much
+  max_gap: null               # null = unbounded
+  step_weights:
+    visual: 0.6               # Trọng số nhánh Visual (Qdrant) cho từng step
+    description: 0.4          # Trọng số nhánh Description (ES) cho từng step
+  allow_fill: true
+  head_min_videos: 3          # distinct videos required inside the first 5 rows
+  head_window: 5
+
+cache:
+  enabled: true
+  dir: "./outputs/cache"
+
+runs:
+  dir: "./outputs/runs"
+  log_file: "./outputs/runs/run.log"

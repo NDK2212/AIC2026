@@ -1,0 +1,23 @@
+# --- core retrieval stack -------------------------------------------------
+qdrant-client>=1.10
+elasticsearch>=8.0
+numpy>=1.24
+PyYAML>=6.0
+python-dotenv>=1.0
+tqdm>=4.65
+
+# --- LLM / VLM ------------------------------------------------------------
+langchain-nvidia-ai-endpoints>=0.3
+langchain-core>=0.3
+requests>=2.31
+
+# --- embedding ------------------------------------------------------------
+torch>=2.1
+transformers>=4.40
+sentence-transformers>=2.7
+pillow>=10.0
+sentencepiece>=0.1.99          # BEiT-3 tokenizer
+# open_clip_torch>=2.24        # only if embedding.siglip.backend == "open_clip"
+
+# --- dev ------------------------------------------------------------------
+pytest>=7.4

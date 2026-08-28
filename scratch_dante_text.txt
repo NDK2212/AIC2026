@@ -1,0 +1,478 @@
+
+
+=== PAGE 1 ===
+
+Integrated Semantic and Temporal Alignment
+for Interactive Video Retrieval
+Thanh-Danh Luu1,3* , Le-Vu Nguyen-Dinh1,3* , Duy-Bao Bui1,3* ,
+Duc-Thien Tran1,3* , Nam-Tien Le2,3* , and Tinh-Anh Nguyen-Nhu2,3B
+1 University of Science, VNU-HCM, Ho Chi Minh City, Vietnam
+{24280055,24120016,23122021}@student.hcmus.edu.vn,
+tdthien2426@apcs.fitus.edu.vn
+2 University of Technology, VNU-HCM, Ho Chi Minh City, Vietnam
+{tien.leaiemperor,anh.nguyennhu2306}@hcmut.edu.vn
+3 Viet Nam National University, Ho Chi Minh City, Vietnam
+AbstractThe growing volume of video data and the introduction of
+complex retrieval challenges, such as the Temporal Retrieval and Align-
+ment of Key Events (TRAKE) task at the Ho Chi Minh City AI Chal-
+lenge 2025, expose critical limitations in existing systems. Many method-
+ologies lack scalable, holistic architectures and rely on "frozen" embed-
+ding models that fail on out-of-knowledge (OOK) or real-world queries.
+This paper introduces the comprehensive video retrieval framework de-
+veloped by team AIO_Owlgorithms to address these gaps. Our system
+features an architecture integrating TransNetV2 for scene segmentation,
+BEiT-3 for visual embeddings in Milvus, and Gemini OCR for metadata
+in Elasticsearch. We propose two components: (1)QUEST(Query Un-
+derstanding and External Search for Out-of-Knowledge Tasks), a two-
+branch framework that leverages a Large Language Model (LLM) for
+query rewriting and an external image search pathway to resolve OOK
+queries; and (2)DANTE(Dynamic Alignment of Narrative Temporal
+Events), a dynamic programming algorithm that efficiently solves the
+temporally-incoherent TRAKE task. These contributions form a robust
+and intelligent system that significantly advances the state-of-the-art in
+handling complex, real-world video search queries.
+Keywords:VideoRetrieval·TemporalEventRetrieval·Content-Based
+Video Retrieval·Multimodal Search·Dynamic Programming
+1 Introduction
+The rapid expansion of multimedia data and the emergence of complex eval-
+uation settings, notably the Temporal Retrieval and Alignment of Key Events
+(TRAKE) task [5,10], expose key limitations in current retrieval systems. Many
+∗ These authors contributed equally to this paper.
+B Corresponding author: anh.nguyennhu2306@hcmut.edu.vn
+arXiv:2512.13169v1  [cs.MM]  15 Dec 2025
+
+=== PAGE 2 ===
+
+methodologies prioritize individual components over holistic, scalable architec-
+tures and rely on embedding models with "frozen" knowledge that fail on Out-
+of-Knowledge (OOK) queries. Furthermore, handling temporally ordered events,
+as required by TRAKE, remains computationally inefficient for most systems.
+Toaddressthesegaps,we,teamAIO_Owlgorithms,proposeacomprehen-
+sive retrieval framework. Our modular architecture integrates TransNetV2 [8] for
+segmentation, Gemini [3] for OCR, BEiT-3 [12] for embeddings, and Milvus [11]
+for vector indexing. We introduce two novel components: (1)QUEST[1], an
+LLM-based framework to resolve OOK queries; and (2)DANTE, a dynamic
+programmingalgorithmthatefficientlysolvesthetemporally-incoherentTRAKE
+task.In summary, our primary contributions are:
+–An end-to-end system architecture designed for scalability, maintainability,
+and seamless upgrades.
+–The integration of an LLM within ourQUESTframework, which employs
+a dual-branch strategy to resolve OOK entities by semantically rewriting
+queries and visually grounding them with external search results.
+–A novel algorithm,DANTE, designed for the TRAKE task, which improves
+temporal alignment accuracy.
+2 Related Work
+Current research faces two significant challenges relevant to our work: bridging
+the "knowledge gap" of static models and efficiently processing complex tem-
+poral queries.First, a severe drawback of many systems is their reliance on
+embedding models with static, "frozen" knowledge bases. These models lack
+the real-world knowledge and reasoning capabilities to handle complex or OOK
+queries. Even when RAG is used, its application is often narrowly confined to
+searching over text transcripts, failing to bridge this fundamental knowledge
+gap. OurQUESTframework addresses this by using an LLM to rewrite queries
+and fetch external visual knowledge.Second, complex temporal event retrieval,
+as required by the TRAKE task, imposes a significant computational burden.
+Standard methods that search for multiple moments [6,7,9] suffer from high la-
+tency and cost as data scales, rendering them inefficient for practical use. Our
+DANTEalgorithm is proposed as an optimized solution to this specific prob-
+lem.
+3 Data Preprocessing
+All video data is converted into structured, searchable representations before
+retrieval. The preprocessing pipeline comprises three components—frame collec-
+tion, metadata extraction, and visual feature embedding; seeFigure 1.
+3.1 Frame Collection
+Videos are segmented into scenes using TransNetV2 to detect content transi-
+tions. Keyframes are extracted from each scene at four positions: the start, two
+
+=== PAGE 3 ===
+
+Video Database
+Video
+ Shot detection
+TransnetV2
+Scenes
+Data Preprocessing
+Each scene gets 4 frames
+start, middle 1, middle 2, end
+Keyframe
+Keyframe
+Database
+Image Embedding
+Elastic
+search
+Milvus
+Gemini OCR
+BEiT-3    
+Figure 1.Overview of the data preprocessing pipeline, including shot detection,
+frame sampling, metadata extraction, and feature embedding.
+from the middle, and the end, following the formula:
+kextract ={K a+⌊i×(b−a)/3⌋,∀i∈{0,1,2,3}}
+whereK j denotes thej-th frame in a scene spanning from frameatob. The
+keyframes are indexed with video identifiers and timestamps.
+3.2 Metadata Extraction
+Each keyframe is processed with Gemini to extract on-screen text (e.g., cap-
+tions or labels), which is stored as key–value pairs (keyframe_id: ocr_text).
+This metadata is stored in an Elasticsearch database, with video-level details like
+timestamps and source identifiers linked to each keyframe for keyword-based fil-
+tering.
+3.3 Visual Feature Extraction
+Keyframes are converted into BEiT-3 visual embeddings that capture se-
+mantic and spatial information. To ensure efficiency, embedding is performed
+through a multi-stage, GPU-accelerated pipeline with dynamic batching. The
+resulting embeddings are precomputed, L2-normalized, and indexed in Milvus,
+enabling fast cosine-similarity retrieval without re-encoding at query time.
+3.4 Multimodal Indexing and Metadata Flow
+Thesystemadoptsamodularstoragedesignanchoredbyaunifiedkeyframe_id.
+After extracting all keyframes from every scene, each keyframe is assigned a
+keyframe_id, which serves as the canonical join key across all backends.
+Storage Backends
+–Vector (Milvus): {keyframe_id, embedding_vector}.
+–OCR (Elasticsearch): {keyframe_id, ocr_text}.
+–Metadata (MongoDB): {keyframe_id, image_path}; video-level {video_id,
+start index (sv), end index(ev)}.
+Query-Time HydrationAfter retrieval modes (Semantic, OCR, and DANTE)
+output ranked lists ofkeyframe_ids, which are resolved at query time by fetch-
+
+=== PAGE 4 ===
+
+ing their metadata (paths, timestamps, video info). This step standardizes result
+presentation and enables follow-up operations such as image-to-image search.
+4 Overall system
+This section presents an overview of the retrieval system, outlining its archi-
+tecture and the integration of its core components, including embedding-based
+search, OCR search, and the two primary methodologies –DANTE(Dynamic
+Alignment of Narrative Temporal Events) andQUEST(Query Understanding
+and External Search for out-of-knowledge Tasks).
+Text query
+Event
+sequence
+TRAKE
+query
+enhancer
+(optional)
+Image query
+(Upload - select)
+OCR text
+Visual text
+BEiT-3
+Encoder
+Elastic
+Search
+Milvus
+DB 
+Reranked/ Filter
+Candidate IDs
+Run DP
+Algorithm
+Figure 2.Overview of the online retrieval pipeline, where text or image queries
+are processed by optional LLM enhancers, the BEiT-3 encoder, or specialized
+modules (DANTE, OCR) before ranked results are returned from Milvus or
+Elasticsearch.
+4.1 Base Search
+TheBase Searchmodule supports two complementary retrieval modes:
+Semantic Search, which retrieves images by visual-semantic similarity, and
+OCR Search, which locates text appearing within images, together providing
+unified semantic and textual access to the dataset.
+InSemantic Search, a user submits a text query describing the target
+visual content and specifies the Top-kresults to return. The query is encoded by
+BEiT-3, which maps textual and visual representations into a unified multimodal
+embedding space, where the cosine similarity between the query embedding and
+precomputed image embeddings determines the most relevant results.
+InOCR Search, a user inputs a text string to locate within images. The
+system uses theVietnamese Analysis Plugin for Elasticsearch[2,4] to match
+the query against OCR text extracted by the Gemini API, enabling effective
+tokenization and similarity analysis for Vietnamese content. The Top-kimages
+with the highest similarity scores are then retrieved and ranked.
+Additionally, users can refine retrieval by selecting an image from the initial
+results to perform an image-to-image search. The selected image’s serves as a
+new query, enabling retrieval of visually related images via cosine similarity and
+supporting the exploration of semantically similar content.
+
+=== PAGE 5 ===
+
+4.2 QUEST: Query Understanding and External Search for Out-of-
+Knowledge Tasks
+QUESTis a two-branch framework designed to address unfamiliar or newly
+emergedvisualentitiesbyenhancingqueryinterpretabilitythroughbothlanguage-
+based reasoning and external visual grounding; seeFigure3. From a single
+query, the system activates one of two complementary pathways depending on
+the nature of the input.
+  Stage 2.2: Embedding, Retrieval
+ Stage 1.2: External Knowledge Retrival
+  Stage 2.1: Image Context Extraction
+ Stage 1.1: Out-of-knowledge rewriting
+User query
+LLM Rewriter
+Feature extraction
+via BEiT-3
+Generated query
+Context-Aware
+Image Selection
+Search with
+generated query
+Similarity Search Final Result
+Final resultPrompt
+Branch 1
+Branch 2
+Figure 3.Overview of theQUESTframework.
+Branch 1: Query Rewriting and System Retrieval. QUESTuses a large
+language model (e.g., GPT-4, Gemini) to rewrite the input queryq0 into a more
+descriptive, visually grounded formqr. This rewritten query aligns better with
+the BEiT-3 embedding space and is processed through the standard retrieval
+pipeline (seeSection4.1), enabling improved performance for ambiguous or
+OOK textual descriptions.
+Branch 2: External Image Retrieval and Visual Matching.In parallel,
+QUESTmay perform external image search following the open-image retrieval
+strategy in [1]. A representative exemplarI∗ is selected (e.g., from Google Im-
+ages) to visually anchor the concept. The exemplar is then encoded by BEiT-3
+and used for image-to-image retrieval, which is particularly effective for novel or
+visually specific entities.
+4.3 DANTE: Dynamic Alignment of Narrative Temporal Events
+We introduce theDANTE(Dynamic Alignment of Narrative Temporal
+Events) algorithm, a novel framework that efficiently retrieves and aligns se-
+quences of temporal moments in narrative order to handle TRAKE queries.
+This algorithm employs dynamic programming (DP) to optimize the search and
+alignment of consecutive keyframes in videos, leveraging the continuous indexing
+structure of keyframes in each video from the Milvus database.
+The algorithm takes as input the embedding vectors ofNevent queries
+(u1,u 2,...,u N) embedded by BEiT-3, along with a JSON metadata file con-
+taining start indexs v and end indexe v for each videov(aggregated fromV
+videos, such that the interval[1,T]withTkeyframes is covered by∪[s v,ev]).
+The similarity matrixS[i,t]is precomputed using cosine similarity betweenu i
+
+=== PAGE 6 ===
+
+BEiT-3 text
+embeddingsN-events queries
+query 1
+query n
+query 2 BEiT-3
+Text
+Encoder
+u1
+un
+u2
+Database
+Video-based keyframes ranges
+BEiT-3 Vision Embeddings
+ ResultsDANTE-search
+Engine
+MongoDB
+Milvus
+DANTE: Dynamic Alignment of Narrative Temporal Events
+Figure 4.Illustration ofDANTEworkflow from input to output.
+and the embedding of keyframetfrom Milvus. The parameterλis used to penal-
+ize temporal distances, helping prioritize nearby keyframes without completely
+eliminating farther options if they have high similarity. The pseudocode of the
+algorithm is presented specifically in Algorithm 1.
+Algorithm 1 DANTE: Dynamic Alignment of Narrative Temporal Events
+Require:Query embedding vectorsU= [u 1,...,u N ], JSON Metadata, Embeddings
+E[1..T], Penalty factorλ
+1: ComputeS[i,t]←Eq.(1) // From Milvus
+2:foreach videovin Metadatado
+3:s v,e v =Metadata[v].start,Metadata[v].end
+4: InitializeDP[1..N,s v..ev]
+5:fort=s v toe v do// Base case fori= 1
+6:DP[1,t] =S[1,t]
+7:end for
+8:fori= 2toNdo
+9:running_max←−∞
+10:fort=s v toe v do
+11:ift>s v then
+12:running_max←Eq.(3)
+13:end if
+14:DP[i,t]←Eq.(4)
+15:end for
+16:end for
+17:DANTE[v]←Eq.(5)
+18: Backtrack to retrieve keyframe sequence if needed
+19:end for
+20: Return top-kvideos byDANTE[v], with backtracked keyframes
+The algorithm operates as follows:
+Step 1: Compute the matrix
+S[i,t] =cosine_similarity(u i,E[t])(1)
+
+=== PAGE 7 ===
+
+fori= 1toNandt= 1toT(performed via Milvus queries to reduce load).
+Step 2: For each videov, initialize the DP tableDP[i,t]fort∈[s v,ev], rep-
+resenting the optimal score when matching eventito keyframet, considering
+previous matches and penalizing temporal distance:
+DP[i,t] =S[i,t] + max
+τ∈[s v,t−1]
+(DP[i−1,τ]−λ(t−τ))(2)
+In this formula, the penalty factorλregulates the balance between temporal
+alignment and similarity strength, ensuring narrative order by preferringτclose
+tot, but remains flexible with smallλ. During the final round of the Ho Chi Minh
+City AI Challenge 2025, we tunedλin the range 0.001 to 0.01, achieving optimal
+performance across scenarios:λ= 0.001worked best when ground-truth query
+vectors(u 1,u 2,...,u N )had index gaps of 3–15, whereasλ= 0.01was most
+effective for tighter alignments with 1–3 index offsets.
+To optimize computation, we use a recursive form with running max: Initialize
+running_max=−∞(max ofDP[i−1,τ] +λτforτ∈[s v,t−1]). Then, for
+eacht∈(s v,ev]:
+running_max= max(running_max,DP[i−1,t−1] +λ(t−1))(3)
+DP[i,t] =S[i,t] +running_max−λt(4)
+This allows computation based solely on immediate previous values, ensuring
+complexityO(N(e v−sv+1))pervideo,andequivalentlyO(NT)overallkeyframes.
+Step 3: Compute the DANTE score for each videov:
+DANTE[v] = max
+t∈[sv,ev]
+DP[N,t](5)
+Output: Top-kvideos with the highestDANTEscores, along with sequences
+ofNkeyframes (one per query) obtained by backtracking fromDP[N,t max].
+Backtracking can be performed by storing argmax for each DP cell to reconstruct
+the optimal path.
+5 System usage
+This section provides an overview of the retrieval system, including its user inter-
+face and core search techniques for handling large event datasets. It also presents
+illustrative examples and summarizes our team’s performance and results in the
+Final Round of the HCMC AI Challange 2025.
+5.1 Overall UI
+Section Ais the query input area (textarea) with an AI enhancer (E) us-
+ing GPT-4o-mini to refine text queries [1].Section Ballows search mode selec-
+tion (“Semantic”, “OCR”,DANTE) and parameter adjustment (Top-K, score
+
+=== PAGE 8 ===
+
+threshold, or penalty weight).Section Cdisplays results as relevance-sorted
+grids (Semantic/OCR/DANTE); clicking an image opens detailed metadata,
+OCR text, and action buttons (Play YouTube,Find Similar Images) for further
+searching.Section Dprovides metadata filters by video group or ID and sup-
+ports image upload for local visual similarity search. All text, image, and event
+embeddings are processed by the BEiT-3 model on the backend.
+Figure 5.Overview of the multi-modal search UI, comprising query input (A)
+with optional AI enhancer (E), search type and parameter controls (B), results
+display (C), and pre-search metadata filters (D); supports image upload or ’Find
+Similar’ functionality within (C).
+5.2 Semantic Search and OCR Search
+This section illustrates howSemantic SearchandOCR Searchoperate
+in the interface using two examples drawn from the Final Round textual KIS
+tasks.
+In theSemantic Searchexample (Figure 6a), contestants entered a brief
+descriptionofathree-tiercakewithwhitefrostingandtwogummyrobottoppers.
+The system retrieved the correct video frame at Top-1, showing its ability to
+interpret free-form descriptive queries. TheOCR Searchexample (Figure 6b)
+targeted a specific onscreen phrase: “PHÚ XUÂN – GIA ĐỊNH – những dấu ấn
+lịch sử.” By matching OCR text extracted from keyframes, the system located
+the correct instance immediately, also at Top-1.
+5.3 QUEST Usage
+This section illustrates how theQUESTframework operates within the
+retrieval interface through two representative use cases corresponding to the
+branches inSection 4.2. Each example compares retrieval performance before
+and after enablingQUEST.
+In theQuery Rewriting Mode, GPT-4o-mini reformulates the user query
+into a clearer, visually meaningful description, enabling retrieval of unseen con-
+cepts such asLabubu; seeFigure 7a. In theExternal Image Search Mode,
+QUESThandles OOK queries by using a web image as visual input—e.g., an
+exemplar ofBabythreeenables successful image-to-image retrieval where text
+alone fails (seeFigure 7b).
+
+=== PAGE 9 ===
+
+(a) Semantic Search
+ (b) OCR Search
+Figure 6.(a) Semantic Search and (b) OCR Search, demonstrating two com-
+plementary retrieval modes.
+1
+2
+(a) Query Rewriting mode inQUEST.
+(1) Direct search for “Labubu” fails. (2)
+Rewriting expands the query and re-
+trieves the correct Top-1 result.
+(b) External Image Search mode.
+(1) A representative web image of
+Babythree. (2) Uploaded as a visual
+query.(3)Image-to-imageretrievalre-
+turns the correct Top-1 result.
+Figure 7.Illustration of the two operational modes ofQUEST. (a) Query
+Rewriting Mode. (b) External Image Search Mode
+5.4 DANTE Usage Demonstration
+We illustrate the impact ofDANTEacross three representative scenarios:
+oneTRAKE-stylemulti-eventqueryfromthepreliminaryroundandtwoKnown-
+Item Search (KIS) tasks from the final round of the HCMC AI Challenge 2025.
+As shown inFigure 8, the TRAKE-style query involves a set of consecutive
+assembly-line actions. Semantic Search scatters relevant keyframes (Figure 8a),
+placing the correct sequence deep in the ranking, whereasDANTEreconstructs
+the full chronology (Figure 8b), demonstrating its ability to recover structured
+multi-step activities.
+In theVideo KIStask (Figure 9a), contestants viewed a clip and provided
+threeordereddescriptions:(1)avastgreenricefield;(2)goldenripericebending;
+(3) close-up white rice grains. Semantic Search returned scattered frames, while
+DANTEaligned the events and retrieved the correct video at Top-1. In the
+Textual KIStask (Figure 9b), contestants typed two descriptions of a news
+
+=== PAGE 10 ===
+
+segment: (1) a cave in France with prehistoric animal and human carvings; (2)
+researchers in white protective suits with headlamps. Despite domain-specific
+phrasing,DANTEcorrectly combined both cues and brought the target video
+to the leading position.
+(a) Semantic search.
+ (b)DANTE: aligned assembly sequence.
+Figure 8.TRAKE-style assembly query showing the contrast between Semantic
+Search andDANTE.
+Overall, these examples show thatDANTEimproves retrieval not only in
+explicitly temporal tasks like TRAKE but also in KIS scenarios by enforcing
+coherent ordering, resulting in more reliable and user-aligned outputs.
+(a) Video KIS: Top-1 result.
+ (b) Textual KIS: Top-1 result.
+Figure 9. DANTEin two final-round KIS tasks. Ordered cues support consis-
+tent retrieval of the intended video.
+In the Final Round of the HCMC AI Challenge 2025, our system achieved
+Outstandingperformance on TRAKE,Excellentresults on Textual KIS, and
+Very Goodresults on both Video KIS and QA. Overall, it received anExcellent
+final rating, reflecting strong robustness across diverse query types.
+6 Conclusion
+In this paper, we, presented a holistic system developed for the HCMC AI Chal-
+lenge 2025 to address key limitations in personal video retrieval. Our modular
+architecture integratesQUESTto overcome embedding knowledge gaps and
+DANTEto efficiently solve the fragmented TRAKE task, forming a robust
+and scalable framework for complex, real-world video search. Future work will
+explore lightweight adapter-based tuning or knowledge distillation to further
+improve efficiency.
+
+=== PAGE 11 ===
+
+Acknowledgments.This research is supported by AIVIET NAM (aivietnam.edu.vn)
+References
+1. Bui-Tran, Q.K., Ha, D.H., Nguyen, M.H., Dang, P.H., Trieu-Hoang, T.A., Nguyen,
+T.H.: Enhanced video retrieval system: Leveraging gpt-4 for multimodal query
+expansion and open image search. pp. 53–67. Singapore (2025)
+2. coccoc: coccoc-tokenizer,https://github.com/coccoc/coccoc-tokenizer, latest
+commit on Apr 15, 2021
+3. DeepMind, G.: Gemini 2.5: Pushing the frontier with advanced reasoning and long-
+context understanding.https://arxiv.org/abs/2507.06261(2025)
+4. Do, D.: elasticsearch-analysis-vietnamese,https://github.com/duydo/
+elasticsearch-analysis-vietnamese, latest commit on July 17, 2025
+5. Do, T.L., Huynh, V.T., Nguyen, H.D., Nguyen-Quang, T., Tran, M.K., Nguyen,
+T.T.,Ninh,T.V.,Le,T.K.,Ngo,T.D.,Dang-Nguyen,D.T.,Ngo,T.T.,Sch¨ offmann,
+K., Gurrin, C., Tran, M.T.: Toward abstraction-level event retrieval in large video
+collections: Leveraging human knowledge and llm-based reasoning in the ho chi
+minh city ai challenge 2025. In: Proceedings of the 14th International Symposium
+on Information and Communication Technology (SOICT 2025). CCIS, Springer,
+Nha Trang, Vietnam (2025)
+6. Nguyen-Nhu, T.A., Minh, T.D.H., To-Thanh, D., Le-Gia, P., Vo-Lan, T., Nguyen,
+T.H.: Ster-vlm: Spatio-temporal with enhanced reference vision-language models
+7. Nguyen-Nhu, T.A., Tran, H.L., Le, N.K., Nguyen, M.N., Nguyen, T.H., Nguyen-
+Huu, H.L., Phan-Nguyen, H.P., Pham, H.T., Nguyen, Q., Le, H.M., Dinh, Q.V.:
+A lightweight moment retrieval system with global re-ranking and robust adaptive
+bidirectional temporal search (2025),https://arxiv.org/abs/2504.09298
+8. Soucek, T., Lokoˇ c, J.: Transnet v2: An effective deep network architecture for fast
+shot transition detection. Proceedings of the 32nd ACM International Conference
+on Multimedia (2020),https://api.semanticscholar.org/CorpusID:221095572
+9. Tran, H.L., Nguyen-Nhu, T.A., Phan-Nguyen, H.P., Nguyen, T.H., Nguyen-Dich,
+N.M., Dao, A., Do, H.D., Nguyen, Q., Le, H.M., Dinh, Q.V.: Towards efficient and
+robust moment retrieval system: A unified framework for multi-granularity models
+and temporal reranking (2025),https://arxiv.org/abs/2504.08384
+10. Vo, T., Duong, Q., Nguyen, Q., Mai, D., Ly, N.: A comprehensive video event re-
+trieval system for vietnamese news: Integrating clip vit, task-former, transcripts,
+and ocr. In: Proceedings of the 13th International Symposium on Information and
+Communication Technology (SOICT 2024) (2025).https://doi.org/10.1007/
+978-981-96-4291-5_19
+11. Wang, J., Yi, X., Guo, R., Jin, H., Xu, P., Li, S., Wang, X., Guo, X., Li, C., Xu,
+X., Yu, K., Yuan, Y., Zou, Y., Long, J., Cai, Y., Li, Z., Zhang, Z., Mo, Y., Gu, J.,
+Xie, C.: Milvus: A purpose-built vector data management system
+12. Wang, W., Bao, H., Dong, L., Bjorck, J., Peng, Z., Liu, Q., Aggarwal, K., Mo-
+hammed, O.K., Singhal, S., Som, S., Wei, F.: Image as a foreign language: Beit
+pretraining for all vision and vision-language tasks (2022)
