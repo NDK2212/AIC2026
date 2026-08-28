@@ -104,13 +104,17 @@ class BLIP2Reranker:
                         images=chunk_imgs, text=chunk_texts, padding=True, return_tensors="pt"
                     )
                     inputs = {k: v.to(self.cfg.device) for k, v in inputs.items()}
+                    is_blip2 = "blip2" in str(self.cfg.model_id).lower() or "blip-2" in str(self.cfg.model_id).lower()
+                    forward_kwargs = {"use_image_text_matching_head": True} if is_blip2 else {"use_itm_head": True}
                     with self._torch.inference_mode():
                         if "cuda" in str(self.cfg.device):
                             with self._torch.autocast(device_type="cuda", dtype=self._torch.float16):
-                                out = self._model(**inputs, use_image_text_matching_head=True)
+                                out = self._model(**inputs, **forward_kwargs)
                         else:
-                            out = self._model(**inputs, use_image_text_matching_head=True)
-                    logits = getattr(out, "logits_per_image", None)
+                            out = self._model(**inputs, **forward_kwargs)
+                    logits = getattr(out, "itm_score", None)
+                    if logits is None:
+                        logits = getattr(out, "logits_per_image", None)
                     if logits is None:
                         logits = out[0]
                     probs = self._torch.softmax(logits, dim=-1)[:, 1].cpu().tolist()
