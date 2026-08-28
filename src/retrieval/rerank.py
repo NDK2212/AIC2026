@@ -41,17 +41,22 @@ class BLIP2Reranker:
             return
         try:
             import torch
-            from transformers import AutoProcessor, Blip2ForImageTextRetrieval
+            from transformers import AutoProcessor
+
+            if "blip2" in str(self.cfg.model_id).lower() or "blip-2" in str(self.cfg.model_id).lower():
+                from transformers import Blip2ForImageTextRetrieval as ModelCls
+            else:
+                from transformers import BlipForImageTextRetrieval as ModelCls
 
             self._processor = AutoProcessor.from_pretrained(self.cfg.model_id)
-            model = Blip2ForImageTextRetrieval.from_pretrained(self.cfg.model_id)
+            model = ModelCls.from_pretrained(self.cfg.model_id)
             model.eval().to(self.cfg.device)
             self._model = model
             self._torch = torch
-            log.info("BLIP-2 Reranker %s loaded on %s", self.cfg.model_id, self.cfg.device)
+            log.info("BLIP Reranker %s loaded on %s", self.cfg.model_id, self.cfg.device)
         except Exception as exc:  # noqa: BLE001
             self._failed = True
-            log.warning("BLIP-2 Reranker unavailable (%s) - continuing without it", exc)
+            log.warning("BLIP Reranker unavailable (%s) - continuing without it", exc)
 
     def rerank(
         self, query: str, candidates: Sequence[Candidate]

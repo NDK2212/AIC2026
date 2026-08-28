@@ -281,7 +281,7 @@ class FusionConfig:
 @dataclass
 class Blip2RerankConfig:
     enabled: bool = False
-    model_id: str = "Salesforce/blip2-itm-vit-g"
+    model_id: str = "Salesforce/blip-itm-base-coco"
     device: str = "cpu"
     top_n: int = 25
     batch_size: int = 16
@@ -292,7 +292,7 @@ class Blip2RerankConfig:
         node = node or {}
         return cls(
             enabled=bool(node.get("enabled", False)),
-            model_id=str(node.get("model_id", "Salesforce/blip2-itm-vit-g")),
+            model_id=str(node.get("model_id", "Salesforce/blip-itm-base-coco")),
             device=resolve_device(str(node.get("device", "auto"))),
             top_n=int(node.get("top_n", 25)),
             batch_size=int(node.get("batch_size", 16)),

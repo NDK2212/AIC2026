@@ -106,8 +106,8 @@ fusion:
 
 rerank:
   blip2:
-    enabled: false            # BLIP-2 ITM rerank inside visual path (after Qdrant)
-    model_id: "Salesforce/blip2-itm-vit-g"
+    enabled: true             # BLIP ITM rerank inside visual path (after Qdrant)
+    model_id: "Salesforce/blip-itm-base-coco"
     device: "auto"
     top_n: 25
     batch_size: 16
