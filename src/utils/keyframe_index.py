@@ -70,13 +70,19 @@ class KeyframeIndex:
         metadata_dir: Path | str | None = None,
         image_glob: str = "*.jpg",
         cache: DiskCache | None = None,
+        minio: Any = None,
+        cache_dir: Path | str | None = None,
     ) -> None:
         self.root = Path(root)
         self.map_dir = Path(map_dir) if map_dir else None
         self.metadata_dir = Path(metadata_dir) if metadata_dir else None
         self.image_glob = image_glob
         self.cache = cache
+        self.minio = minio
+        self.cache_dir = Path(cache_dir) if cache_dir else Path("./outputs/cache/keyframes")
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.videos: dict[str, VideoKeyframes] = {}
+        self._minio_video_maps: dict[str, dict[int, str]] = {}
         self._warned_missing: set[str] = set()
         self._load()
 
@@ -211,13 +217,37 @@ class KeyframeIndex:
     # ------------------------------------------------------------------
     # queries
     # ------------------------------------------------------------------
+    def _ensure_video(self, video_id: str) -> VideoKeyframes | None:
+        """Ensure a video is in self.videos, discovering from MinIO if missing locally."""
+        if video_id in self.videos:
+            return self.videos[video_id]
+
+        if self.minio is not None and getattr(self.minio, "enabled", False):
+            if video_id in self._minio_video_maps:
+                fmap = self._minio_video_maps[video_id]
+            else:
+                fmap = self.minio.discover_video_frames(video_id)
+                self._minio_video_maps[video_id] = fmap
+
+            if fmap:
+                fids = sorted(fmap.keys())
+                vk = VideoKeyframes(
+                    video_id=video_id,
+                    frame_ids=fids,
+                    paths=[fmap[fid] for fid in fids],
+                    exact=True,
+                )
+                self.videos[video_id] = vk
+                return vk
+        return None
+
     def has_video(self, video_id: str) -> bool:
         """True when this video has a keyframe table."""
-        return video_id in self.videos
+        return self._ensure_video(video_id) is not None
 
     def path_of(self, video_id: str, frame_id: int) -> Path | None:
         """Image path for an exact ``(video_id, frame_id)``, else ``None``."""
-        video = self.videos.get(video_id)
+        video = self._ensure_video(video_id)
         if video is None:
             return None
         pos = video.position(int(frame_id))
@@ -229,11 +259,11 @@ class KeyframeIndex:
         Returns ``(frame_id, path)``.  Logs a warning when the match is not
         exact so silent frame drift is visible in the run log.
         """
-        video = self.videos.get(video_id)
+        video = self._ensure_video(video_id)
         if video is None or not video.frame_ids:
             if video_id not in self._warned_missing:
                 self._warned_missing.add(video_id)
-                log.warning("No keyframes on disk for video %s", video_id)
+                log.warning("No keyframes found for video %s", video_id)
             return None
         pos = video.nearest_position(int(frame_id))
         actual = video.frame_ids[pos]
@@ -256,6 +286,114 @@ class KeyframeIndex:
             return exact
         found = self.nearest(video_id, frame_id)
         return found[1] if found else None
+
+    def get_image(self, video_id: str, frame_id: int) -> Any:
+        """Return PIL.Image (RGB) for (video_id, frame_id), checking Disk cache then MinIO."""
+        from PIL import Image
+
+        # 1. Check local cache directory first
+        cached_file = self.cache_dir / video_id / f"{int(frame_id)}.jpg"
+        if cached_file.is_file():
+            try:
+                with Image.open(cached_file) as img:
+                    return img.convert("RGB")
+            except Exception:
+                pass
+
+        # 2. Check local dataset root
+        local_path = self.resolve_image(video_id, frame_id)
+        if local_path and local_path.is_file():
+            try:
+                with Image.open(local_path) as img:
+                    return img.convert("RGB")
+            except Exception:
+                pass
+
+        # 3. Fetch from MinIO if available
+        if self.minio is not None and getattr(self.minio, "enabled", False):
+            video = self._ensure_video(video_id)
+            if video:
+                pos = video.position(int(frame_id))
+                if pos is None:
+                    pos = video.nearest_position(int(frame_id))
+                obj_name = video.paths[pos]
+                img = self.minio.get_image(obj_name)
+                if img is not None:
+                    # Save to local disk cache for fast future reuse
+                    try:
+                        cached_file.parent.mkdir(parents=True, exist_ok=True)
+                        img.save(cached_file, format="JPEG", quality=90)
+                    except Exception as exc:
+                        log.debug("Failed to cache image to %s: %s", cached_file, exc)
+                    return img
+        return None
+
+    def batch_get_images(
+        self, items: Sequence[tuple[str, int]], max_workers: int = 10
+    ) -> dict[tuple[str, int], Any]:
+        """Fetch multiple images in parallel using local cache and MinIO streaming."""
+        from concurrent.futures import ThreadPoolExecutor
+        from PIL import Image
+
+        results: dict[tuple[str, int], Any] = {}
+        missing: list[tuple[str, int, str]] = []
+
+        # Pre-ensure videos concurrently if not loaded
+        unique_vids = {vid for vid, _ in items if vid not in self.videos}
+        if unique_vids and self.minio is not None and getattr(self.minio, "enabled", False):
+            with ThreadPoolExecutor(max_workers=min(max_workers, len(unique_vids))) as pool:
+                list(pool.map(self._ensure_video, unique_vids))
+
+        # First pass: check local files and disk cache
+        for vid, fid in items:
+            key = (vid, int(fid))
+            cached_file = self.cache_dir / vid / f"{int(fid)}.jpg"
+            if cached_file.is_file():
+                try:
+                    with Image.open(cached_file) as img:
+                        results[key] = img.convert("RGB")
+                        continue
+                except Exception:
+                    pass
+            local_path = self.resolve_image(vid, fid)
+            if local_path and local_path.is_file():
+                try:
+                    with Image.open(local_path) as img:
+                        results[key] = img.convert("RGB")
+                        continue
+                except Exception:
+                    pass
+
+            if self.minio is not None and getattr(self.minio, "enabled", False):
+                video = self._ensure_video(vid)
+                if video:
+                    pos = video.position(int(fid))
+                    if pos is None:
+                        pos = video.nearest_position(int(fid))
+                    obj_name = video.paths[pos]
+                    missing.append((vid, int(fid), obj_name))
+
+        if not missing or self.minio is None:
+            return results
+
+        def _fetch_save(item: tuple[str, int, str]) -> tuple[tuple[str, int], Any]:
+            vid, fid, obj_name = item
+            img = self.minio.get_image(obj_name)
+            if img is not None:
+                cached_file = self.cache_dir / vid / f"{fid}.jpg"
+                try:
+                    cached_file.parent.mkdir(parents=True, exist_ok=True)
+                    img.save(cached_file, format="JPEG", quality=90)
+                except Exception:
+                    pass
+            return (vid, fid), img
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for key, img in executor.map(_fetch_save, missing):
+                if img is not None:
+                    results[key] = img
+
+        return results
 
     def neighbors(
         self, video_id: str, frame_id: int, offsets: Iterable[int]

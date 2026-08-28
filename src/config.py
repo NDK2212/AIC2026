@@ -469,6 +469,44 @@ class TrakeConfig:
 
 
 @dataclass
+class MinioConfig:
+    enabled: bool = True
+    endpoint: str = "bucket.viettech.fit"
+    access_key: str = "minioadmin"
+    secret_key: str = "minioadmin"
+    bucket: str = "aic2026"
+    prefix: str = "keyframes/batch_1/"
+    secure: bool = True
+    max_retries: int = 5
+    timeout: int = 30
+    max_workers: int = 10
+    cache_dir: Path = Path("./outputs/cache/keyframes")
+
+    @classmethod
+    def parse(cls, node: dict[str, Any], base: Path) -> "MinioConfig":
+        def _path(raw: Any) -> Path:
+            p = Path(str(raw)).expanduser()
+            return p if p.is_absolute() else (base / p).resolve()
+
+        sec_env = _env("MINIO_SECURE")
+        secure = bool(node.get("secure", True)) if sec_env is None else (sec_env.lower() in ("true", "1", "yes"))
+
+        return cls(
+            enabled=bool(node.get("enabled", True)),
+            endpoint=str(_env("MINIO_ENDPOINT") or node.get("endpoint", "bucket.viettech.fit")),
+            access_key=str(_env("MINIO_ACCESS_KEY") or node.get("access_key", "minioadmin")),
+            secret_key=str(_env("MINIO_SECRET_KEY") or node.get("secret_key", "minioadmin")),
+            bucket=str(_env("MINIO_BUCKET") or node.get("bucket", "aic2026")),
+            prefix=str(_env("MINIO_PREFIX") or node.get("prefix", "keyframes/batch_1/")),
+            secure=secure,
+            max_retries=int(node.get("max_retries", 5)),
+            timeout=int(node.get("timeout", 30)),
+            max_workers=int(node.get("max_workers", 10)),
+            cache_dir=_path(node.get("cache_dir", "./outputs/cache/keyframes")),
+        )
+
+
+@dataclass
 class CacheConfig:
     enabled: bool = True
     dir: Path = Path("./outputs/cache")
@@ -497,6 +535,7 @@ class Config:
     fusion: FusionConfig
     rerank: RerankConfig
     keyframes: KeyframeConfig
+    minio: MinioConfig
     submission: SubmissionConfig
     vqa: VQAConfig
     trake: TrakeConfig
@@ -539,6 +578,7 @@ class Config:
             fusion=FusionConfig.parse(raw.get("fusion") or {}),
             rerank=RerankConfig.parse(raw.get("rerank") or {}),
             keyframes=KeyframeConfig.parse(_sub(raw, "keyframes", "<root>"), base),
+            minio=MinioConfig.parse(raw.get("minio") or {}, base),
             submission=SubmissionConfig.parse(raw.get("submission") or {}),
             vqa=VQAConfig.parse(raw.get("vqa") or {}),
             trake=TrakeConfig.parse(raw.get("trake") or {}),

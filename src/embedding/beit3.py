@@ -97,8 +97,9 @@ class BEiT3TextEncoder(TextEncoder):
                     sys.path.insert(0, str(p.resolve()))
 
             from modeling_utils import BEiT3Wrapper, _get_large_config
-            config = _get_large_config(img_size=224)
-            model = BEiT3Wrapper(args=config)
+            with torch.device("cpu"):
+                config = _get_large_config(img_size=224)
+                model = BEiT3Wrapper(args=config)
         except Exception:
             model = None
 

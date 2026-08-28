@@ -87,23 +87,27 @@ class BLIP2Reranker:
             return ordered
 
         head, tail = ordered[: self.cfg.top_n], ordered[self.cfg.top_n:]
-        from concurrent.futures import ThreadPoolExecutor
-        from PIL import Image
+        # 1. Parallel image pre-fetching via KeyframeIndex (supporting Local SSD + MinIO)
+        items = [(cand.video_id, cand.frame_id) for cand in head]
+        if hasattr(self.kf, "batch_get_images"):
+            image_map = self.kf.batch_get_images(items, max_workers=min(10, max(1, len(head))))
+            loaded_images = [image_map.get((cand.video_id, cand.frame_id)) for cand in head]
+        else:
+            def _load_image(cand: Candidate) -> Any:
+                if hasattr(self.kf, "get_image"):
+                    return self.kf.get_image(cand.video_id, cand.frame_id)
+                path = self.kf.resolve_image(cand.video_id, cand.frame_id)
+                if path is None or not Path(path).is_file():
+                    return None
+                try:
+                    with Image.open(path) as img:
+                        return img.convert("RGB")
+                except Exception as exc:  # noqa: BLE001
+                    log.debug("Image load failed for %s: %s", path, exc)
+                    return None
 
-        def _load_image(cand: Candidate) -> Any:
-            path = self.kf.resolve_image(cand.video_id, cand.frame_id)
-            if path is None:
-                return None
-            try:
-                with Image.open(path) as img:
-                    return img.convert("RGB")
-            except Exception as exc:  # noqa: BLE001
-                log.debug("Image load failed for %s: %s", path, exc)
-                return None
-
-        # 1. Parallel image pre-fetching
-        with ThreadPoolExecutor(max_workers=min(8, max(1, len(head))), thread_name_prefix="blip2_io") as pool:
-            loaded_images = list(pool.map(_load_image, head))
+            with ThreadPoolExecutor(max_workers=min(8, max(1, len(head))), thread_name_prefix="blip_io") as pool:
+                loaded_images = list(pool.map(_load_image, head))
 
         # 2. Batched model inference
         valid_pairs = [(idx, img) for idx, img in enumerate(loaded_images) if img is not None]

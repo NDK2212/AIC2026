@@ -53,6 +53,7 @@ class Services:
     cfg: Config
     _cache: DiskCache | None = None
     _kf: KeyframeIndex | None = None
+    _minio: Any = None
     _llm: Any = None
     _vlm: Any = None
     _qdrant: Any = None
@@ -66,6 +67,14 @@ class Services:
         return self._cache
 
     @property
+    def minio(self) -> Any:
+        from .clients.minio_client import MinioKeyframeClient
+
+        if self._minio is None and self.cfg.minio.enabled:
+            self._minio = MinioKeyframeClient(self.cfg.minio)
+        return self._minio
+
+    @property
     def keyframes(self) -> KeyframeIndex:
         if self._kf is None:
             self._kf = KeyframeIndex(
@@ -74,6 +83,8 @@ class Services:
                 metadata_dir=self.cfg.keyframes.metadata_dir,
                 image_glob=self.cfg.keyframes.image_glob,
                 cache=self.cache,
+                minio=self.minio,
+                cache_dir=self.cfg.minio.cache_dir,
             )
         return self._kf
 
@@ -243,11 +254,24 @@ def cmd_inspect(args: argparse.Namespace, services: Services) -> int:
             failures.append(f"Dimension check: {exc}")
             print(f"  ERROR      : {exc}")
 
-    # -- keyframes ---------------------------------------------------------
-    print("\n[Keyframes]")
+    # -- keyframes & MinIO -------------------------------------------------
+    print("\n[Keyframes & Storage]")
     print(f"  root       : {cfg.keyframes.root}")
+    if cfg.minio.enabled:
+        print(f"  MinIO      : {cfg.minio.endpoint} (bucket: {cfg.minio.bucket}, prefix: {cfg.minio.prefix})")
+        try:
+            minio_client = services.minio
+            if minio_client and minio_client.enabled:
+                print("  MinIO conn : OK (connected)")
+            else:
+                print("  MinIO conn : WARNING (disabled or connection failed)")
+        except Exception as exc:  # noqa: BLE001
+            print(f"  MinIO conn : WARNING ({exc})")
+    else:
+        print("  MinIO      : disabled")
+
     kf = services.keyframes
-    print(f"  videos     : {len(kf)}")
+    print(f"  local vids : {len(kf)}")
     if len(kf):
         sample = sorted(kf.videos)[0]
         frames = kf.all_frames(sample)
@@ -255,8 +279,8 @@ def cmd_inspect(args: argparse.Namespace, services: Services) -> int:
               f"frames {frames[0]}..{frames[-1]}, median gap {kf.median_gap(sample)}")
         exact = sum(1 for v in kf.videos.values() if v.exact)
         print(f"  mapped     : {exact}/{len(kf)} videos have a real frame-index map")
-    else:
-        print("  WARNING    : no keyframes found - Q&A and neighbour expansion are disabled")
+    elif not cfg.minio.enabled:
+        print("  WARNING    : no keyframes found locally and MinIO disabled - BLIP rerank and neighbour expansion will be limited")
 
     print("\n" + "=" * 74)
     if failures:
@@ -318,6 +342,8 @@ def cmd_kis(args: argparse.Namespace, services: Services) -> int:
     from .submission.writer import write_kis
     from .tasks.kis import run_kis
 
+    if not args.query_file:
+        raise PipelineError("A query file must be provided (e.g. python -m src.cli kis queries/query-1-kis.txt)")
     query_path = Path(args.query_file)
     query = read_query(query_path)
     rows = run_kis(
@@ -338,6 +364,8 @@ def cmd_qa(args: argparse.Namespace, services: Services) -> int:
     from .submission.writer import write_qa
     from .tasks.vqa import run_vqa
 
+    if not args.query_file:
+        raise PipelineError("A query file must be provided (e.g. python -m src.cli qa queries/query-3-qa.txt)")
     query_path = Path(args.query_file)
     query = read_query(query_path)
     rows = run_vqa(
@@ -363,6 +391,8 @@ def cmd_trake(args: argparse.Namespace, services: Services) -> int:
     from .submission.writer import write_trake
     from .tasks.trake import run_trake, save_plan
 
+    if not args.query_file:
+        raise PipelineError("A query file must be provided (e.g. python -m src.cli trake queries/query-4-trake.txt)")
     query_path = Path(args.query_file)
     query = read_query(query_path)
     rows, plan = run_trake(
@@ -388,6 +418,8 @@ def cmd_batch(args: argparse.Namespace, services: Services) -> int:
     from .tasks.trake import run_trake, save_plan
     from .tasks.vqa import run_vqa
 
+    if not args.query_dir:
+        raise PipelineError("A query directory must be provided (e.g. python -m src.cli batch queries/)")
     query_dir = Path(args.query_dir)
     if not query_dir.is_dir():
         raise PipelineError(f"Query directory not found: {query_dir}")
@@ -563,12 +595,14 @@ def build_parser() -> argparse.ArgumentParser:
         ("trake", cmd_trake, "run one TRAKE query"),
     ):
         p = sub.add_parser(name, parents=[common], help=help_text)
-        p.add_argument("--query-file", required=True, help="path to the query .txt file")
-        p.add_argument("--out", help="output CSV path")
+        p.add_argument("query_file", nargs="?", default=None, help="path to the query .txt file")
+        p.add_argument("--query-file", dest="query_file_flag", default=None, help="path to the query .txt file")
+        p.add_argument("--out", dest="out_flag", default=None, help="output CSV path")
         p.set_defaults(func=func)
 
     p = sub.add_parser("batch", parents=[common], help="run a whole query directory")
-    p.add_argument("--query-dir", required=True, help="directory of query .txt files")
+    p.add_argument("query_dir", nargs="?", default=None, help="directory of query .txt files")
+    p.add_argument("--query-dir", dest="query_dir_flag", default=None, help="directory of query .txt files")
     p.add_argument("--out-dir", help="directory for the result CSVs")
     p.set_defaults(func=cmd_batch)
 
@@ -577,8 +611,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_validate)
 
     p = sub.add_parser("pack", parents=[common], help="validate then zip a submission directory")
+    p.add_argument("out", nargs="?", default=None, help="output .zip path")
+    p.add_argument("--out", dest="out_flag", default=None, help="output .zip path")
     p.add_argument("--dir", help="submission directory")
-    p.add_argument("--out", required=True, help="output .zip path")
     p.add_argument("--no-validate", action="store_true",
                    help="package even if validation fails (not recommended)")
     p.set_defaults(func=cmd_pack)
@@ -591,6 +626,12 @@ def apply_global_defaults(args: argparse.Namespace) -> argparse.Namespace:
     for name, default in GLOBAL_DEFAULTS.items():
         if not hasattr(args, name):
             setattr(args, name, default)
+    if not getattr(args, "query_file", None):
+        args.query_file = getattr(args, "query_file_flag", None)
+    if not getattr(args, "query_dir", None):
+        args.query_dir = getattr(args, "query_dir_flag", None)
+    if not getattr(args, "out", None):
+        args.out = getattr(args, "out_flag", None)
     return args
 
 

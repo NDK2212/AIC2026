@@ -126,6 +126,19 @@ keyframes:
   metadata_dir: "./data/metadata"
   image_glob: "*.jpg"
 
+minio:
+  enabled: true
+  endpoint: "bucket.viettech.fit"
+  access_key: "minioadmin"
+  secret_key: "minioadmin"
+  bucket: "aic2026"
+  prefix: "keyframes/batch_1/"
+  secure: true
+  max_retries: 5
+  timeout: 30
+  max_workers: 10
+  cache_dir: "./outputs/cache/keyframes"
+
 submission:
   max_rows: 100
   top_diverse: 8              # first N rows must come from different shots

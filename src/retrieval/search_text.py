@@ -223,28 +223,59 @@ class TextSearcher:
         if not targets:
             return {}
 
-        video_ids = list({c.video_id for c in targets})
-        if not video_ids:
-            return {}
+        should_clauses: list[dict[str, Any]] = []
+        frame_field = self.cfg.fields.get("frame_id", "frame_id_ocr")
+        search_window = max(25, max_shot_gap)
 
-        # Construct batch query across target video IDs
-        body = {
-            "size": min(1000, len(targets) * 10),
-            "query": {
+        for target in targets:
+            v_id = str(target.video_id).removesuffix(".mp4")
+            should_clauses.append({
                 "bool": {
-                    "should": [
-                        {"terms": {"video_id.keyword": video_ids}},
-                        {"terms": {"video_id": video_ids}},
-                        {"terms": {"video_name.keyword": video_ids}},
-                        {"terms": {"video_name": video_ids}},
-                    ],
-                    "minimum_should_match": 1,
+                    "filter": [
+                        {"terms": {"video_id": [v_id, f"{v_id}.mp4"]}},
+                        {
+                            "range": {
+                                frame_field: {
+                                    "gte": max(0, target.frame_id - search_window),
+                                    "lte": target.frame_id + search_window,
+                                }
+                            }
+                        },
+                    ]
                 }
-            },
-        }
+            })
+
+        # If too many clauses, fallback to terms query
+        if len(should_clauses) > 64:
+            video_ids = list({c.video_id for c in targets})
+            body = {
+                "query": {
+                    "bool": {
+                        "should": [
+                            {"terms": {"video_id": video_ids}},
+                            {"terms": {"video_name": video_ids}},
+                        ],
+                        "minimum_should_match": 1,
+                    }
+                },
+                "_source": [
+                    "video_id", "video_name", "frame_id", "frame_id_ocr",
+                    "frame_description", "video_description", "title",
+                    "ocr_text", "clean_text", "asr_text",
+                ],
+            }
+        else:
+            body = {
+                "query": {"bool": {"should": should_clauses, "minimum_should_match": 1}},
+                "_source": [
+                    "video_id", "video_name", "frame_id", "frame_id_ocr",
+                    "frame_description", "video_description", "title",
+                    "ocr_text", "clean_text", "asr_text",
+                ],
+            }
 
         try:
-            hits = self.client.search(body, size=min(1000, len(targets) * 10))
+            hits = self.client.search(body, size=min(1000, max(100, len(targets) * 25)))
         except Exception as exc:  # noqa: BLE001
             log.warning("fetch_metadata failed against Elasticsearch: %s", exc)
             return {}
@@ -313,7 +344,7 @@ class TextSearcher:
             # Sort by frame distance
             matching_docs.sort(key=lambda d: abs(d["frame_id"] - target.frame_id))
             closest = matching_docs[0]
-            if abs(closest["frame_id"] - target.frame_id) <= max_shot_gap:
+            if abs(closest["frame_id"] - target.frame_id) <= search_window:
                 result[target.key] = {
                     "description": closest["description"],
                     "ocr": closest["ocr"],
