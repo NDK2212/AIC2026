@@ -97,6 +97,8 @@ class ElasticWrapper:
         params = dict(body)
         if "_source" in params:
             params["source"] = params.pop("_source")
+        if "size" in params:
+            size = params.pop("size")
         response = self.client.search(index=self.cfg.index, size=size, **params)
         hits = response["hits"]["hits"]
         log.debug("Elasticsearch returned %d hits", len(hits))

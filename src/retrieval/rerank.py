@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import threading
 from typing import Any, Sequence
 
 from ..config import BGERerankConfig, Blip2RerankConfig, RerankConfig
@@ -29,6 +30,7 @@ class BLIP2Reranker:
         self._processor: Any = None
         self._failed = False
         self._torch: Any = None
+        self._lock = threading.Lock()
 
     @property
     def enabled(self) -> bool:
@@ -39,24 +41,38 @@ class BLIP2Reranker:
         """Load the BLIP-2 ITM model lazily; failure disables it gracefully."""
         if self._model is not None or self._failed:
             return
-        try:
-            import torch
-            from transformers import AutoProcessor
+        with self._lock:
+            if self._model is not None or self._failed:
+                return
+            for attempt in range(3):
+                try:
+                    import torch
+                    from transformers import AutoProcessor
 
-            if "blip2" in str(self.cfg.model_id).lower() or "blip-2" in str(self.cfg.model_id).lower():
-                from transformers import Blip2ForImageTextRetrieval as ModelCls
-            else:
-                from transformers import BlipForImageTextRetrieval as ModelCls
+                    if "blip2" in str(self.cfg.model_id).lower() or "blip-2" in str(self.cfg.model_id).lower():
+                        from transformers import Blip2ForImageTextRetrieval as ModelCls
+                    else:
+                        from transformers import BlipForImageTextRetrieval as ModelCls
 
-            self._processor = AutoProcessor.from_pretrained(self.cfg.model_id)
-            model = ModelCls.from_pretrained(self.cfg.model_id)
-            model.eval().to(self.cfg.device)
-            self._model = model
-            self._torch = torch
-            log.info("BLIP Reranker %s loaded on %s", self.cfg.model_id, self.cfg.device)
-        except Exception as exc:  # noqa: BLE001
-            self._failed = True
-            log.warning("BLIP Reranker unavailable (%s) - continuing without it", exc)
+                    self._processor = AutoProcessor.from_pretrained(self.cfg.model_id)
+                    model = ModelCls.from_pretrained(self.cfg.model_id)
+                    if str(self.cfg.device).lower() not in ("cpu", "auto"):
+                        try:
+                            model.to(self.cfg.device)
+                        except Exception:
+                            pass
+                    model.eval()
+                    self._model = model
+                    self._torch = torch
+                    log.info("BLIP Reranker %s loaded on %s", self.cfg.model_id, self.cfg.device)
+                    return
+                except Exception as exc:  # noqa: BLE001
+                    if attempt < 2:
+                        import time
+                        time.sleep(0.5)
+                        continue
+                    self._failed = True
+                    log.warning("BLIP Reranker unavailable (%s) - continuing without it", exc)
 
     def rerank(
         self, query: str, candidates: Sequence[Candidate]
@@ -174,6 +190,7 @@ class BGEReranker:
         self._tokenizer: Any = None
         self._failed = False
         self._torch: Any = None
+        self._lock = threading.Lock()
 
     @property
     def enabled(self) -> bool:
@@ -184,19 +201,28 @@ class BGEReranker:
         """Load the BGE Cross-Encoder lazily; failure disables it gracefully."""
         if self._model is not None or self._failed:
             return
-        try:
-            import torch
-            from transformers import AutoModelForSequenceClassification, AutoTokenizer
+        with self._lock:
+            if self._model is not None or self._failed:
+                return
+            for attempt in range(3):
+                try:
+                    import torch
+                    from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-            self._tokenizer = AutoTokenizer.from_pretrained(self.cfg.model_id)
-            model = AutoModelForSequenceClassification.from_pretrained(self.cfg.model_id)
-            model.eval().to(self.cfg.device)
-            self._model = model
-            self._torch = torch
-            log.info("BGE Reranker %s loaded on %s", self.cfg.model_id, self.cfg.device)
-        except Exception as exc:  # noqa: BLE001
-            self._failed = True
-            log.warning("BGE Reranker unavailable (%s) - continuing without it", exc)
+                    self._tokenizer = AutoTokenizer.from_pretrained(self.cfg.model_id)
+                    model = AutoModelForSequenceClassification.from_pretrained(self.cfg.model_id)
+                    model.eval().to(self.cfg.device)
+                    self._model = model
+                    self._torch = torch
+                    log.info("BGE Reranker %s loaded on %s", self.cfg.model_id, self.cfg.device)
+                    return
+                except Exception as exc:  # noqa: BLE001
+                    if attempt < 2:
+                        import time
+                        time.sleep(0.5)
+                        continue
+                    self._failed = True
+                    log.warning("BGE Reranker unavailable (%s) - continuing without it", exc)
 
     def rerank(
         self, query: str, candidates: Sequence[Candidate]

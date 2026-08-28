@@ -108,7 +108,7 @@ class BEiT3TextEncoder(TextEncoder):
                 import modeling_finetune  # noqa: F401
                 import timm
                 model_name = Path(str(self.cfg.model_id)).name.replace("-", "_")
-                for name in [model_name, f"beit3_{model_name}", "beit3_large_patch16_384_retrieval"]:
+                for name in ["beit3_large_patch16_224", f"beit3_{model_name}_patch16_224", f"beit3_{model_name}", model_name]:
                     try:
                         model = timm.create_model(name, pretrained=False)
                         break
@@ -136,7 +136,12 @@ class BEiT3TextEncoder(TextEncoder):
             ) from exc
 
         self._tokenizer = self._load_spm()
-        model.eval().to(self.cfg.device)
+        if str(self.cfg.device).lower() not in ("cpu", "auto"):
+            try:
+                model.to(self.cfg.device)
+            except Exception:
+                pass
+        model.eval()
         self._model = model
         self._mode = "torchscale"
 
