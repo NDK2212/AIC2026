@@ -113,7 +113,7 @@ rerank:
     batch_size: 16
     weight: 1.0
   bge:
-    enabled: false            # BGE cross-encoder rerank for text paths
+    enabled: true             # BGE cross-encoder rerank for text paths
     model_id: "BAAI/bge-reranker-v2-m3"
     device: "auto"
     top_n: 25
