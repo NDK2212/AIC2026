@@ -14,7 +14,7 @@ import random
 import time
 from typing import Any, Iterable
 
-from ..config import LLMConfig
+from ..config import LLMConfig, ModelFallbackConfig
 from ..logging_utils import get_logger
 from ..schemas import ConfigError, LLMParseError
 from ..utils.cache import DiskCache, sha256_key
@@ -110,6 +110,7 @@ class LLMClient:
         self.cfg = cfg
         self.cache = cache
         self._client: Any | None = None
+        self._primary_unavailable = False
 
     # ------------------------------------------------------------------
     @property
@@ -128,18 +129,29 @@ class LLMClient:
             "temperature": self.cfg.temperature,
             "top_p": self.cfg.top_p,
             "max_tokens": self.cfg.max_tokens,
+            "timeout": self.cfg.timeout,
         }
         if self.cfg.enable_thinking:
             kwargs["chat_template_kwargs"] = {"enable_thinking": True}
         if self.cfg.base_url:
             kwargs["base_url"] = self.cfg.base_url
         try:
-            return ChatNVIDIA(**kwargs)
+            client = ChatNVIDIA(**kwargs)
         except Exception as exc:
             if "chat_template_kwargs" in kwargs:
                 kwargs.pop("chat_template_kwargs", None)
-                return ChatNVIDIA(**kwargs)
-            raise
+                client = ChatNVIDIA(**kwargs)
+            else:
+                raise
+        self._set_transport_timeout(client)
+        return client
+
+    def _set_transport_timeout(self, client: Any) -> None:
+        """ChatNVIDIA may leave its internal transport at the 60s default."""
+        for attr in ("_client", "_async_client"):
+            transport = getattr(client, attr, None)
+            if transport is not None and hasattr(transport, "timeout"):
+                transport.timeout = float(self.cfg.timeout)
 
     def _build_client(self) -> Any:
         from .key_pool import GLOBAL_KEY_POOL
@@ -156,7 +168,13 @@ class LLMClient:
     # ------------------------------------------------------------------
     def chat(self, system: str, user: str, *, use_cache: bool = True) -> str:
         """Single completion, cached by ``sha256(model + system + user)``."""
-        key = sha256_key(self.cfg.model, self.cfg.temperature, system, user)
+        key = sha256_key(
+            self.cfg.model,
+            self.cfg.fallback.model if self.cfg.fallback.enabled else "",
+            self.cfg.temperature,
+            system,
+            user,
+        )
         if use_cache and self.cache is not None:
             hit = self.cache.get_json("llm", key)
             if isinstance(hit, dict) and "content" in hit:
@@ -180,7 +198,14 @@ class LLMClient:
         use_cache: bool = True,
     ) -> dict[str, Any]:
         """Completion that must yield a JSON object; retries on parse failure."""
-        key = sha256_key(self.cfg.model, self.cfg.temperature, system, user, schema_hint)
+        key = sha256_key(
+            self.cfg.model,
+            self.cfg.fallback.model if self.cfg.fallback.enabled else "",
+            self.cfg.temperature,
+            system,
+            user,
+            schema_hint,
+        )
         if use_cache and self.cache is not None:
             hit = self.cache.get_json("llm_json", key)
             if isinstance(hit, dict):
@@ -196,7 +221,7 @@ class LLMClient:
 
         last_error: Exception | None = None
         last_raw = ""
-        for attempt in range(1, self.cfg.max_retries + 1):
+        for attempt in range(1, self.cfg.json_retries + 1):
             raw = self._invoke_with_retry(messages)
             last_raw = raw
             try:
@@ -205,7 +230,7 @@ class LLMClient:
                 last_error = exc
                 log.warning(
                     "LLM JSON parse failed (attempt %d/%d): %s",
-                    attempt, self.cfg.max_retries, exc,
+                    attempt, self.cfg.json_retries, exc,
                 )
                 messages = messages[:2] + [
                     {"role": "assistant", "content": raw[-2000:]},
@@ -217,18 +242,56 @@ class LLMClient:
             return parsed
 
         raise LLMParseError(
-            f"LLM did not return valid JSON after {self.cfg.max_retries} attempts. "
+            f"LLM did not return valid JSON after {self.cfg.json_retries} attempts. "
             f"Last error: {last_error}. Raw output:\n{last_raw[:2000]}"
         )
 
     # ------------------------------------------------------------------
     def _invoke_with_retry(self, messages: list[dict[str, str]]) -> str:
-        """Call the model, rotating keys on rate-limit / server overload failures."""
+        """Call the primary model, then switch to the configured local fallback."""
+        fallback = self.cfg.fallback
+        if self._primary_unavailable and fallback.enabled:
+            return self._invoke_fallback_with_retry(messages, fallback)
+        try:
+            return self._invoke_primary_with_retry(messages)
+        except Exception as primary_exc:  # noqa: BLE001
+            if not fallback.enabled:
+                raise
+            self._primary_unavailable = True
+            log.warning(
+                "Primary LLM %s failed (%s) - switching to fallback %s at %s",
+                self.cfg.model,
+                primary_exc,
+                fallback.model,
+                fallback.base_url,
+            )
+            try:
+                return self._invoke_fallback_with_retry(messages, fallback)
+            except Exception as fallback_exc:  # noqa: BLE001
+                raise LLMParseError(
+                    "Both primary and fallback LLM calls failed. "
+                    f"Primary: {primary_exc}. Fallback: {fallback_exc}"
+                ) from fallback_exc
+
+    def _invoke_primary_with_retry(self, messages: list[dict[str, str]]) -> str:
+        """Call the primary provider with its retry policy."""
+        if self.cfg.provider == "openai-compatible":
+            return self._invoke_openai_with_retry(
+                messages=messages,
+                model=self.cfg.model,
+                base_url=self.cfg.base_url,
+                api_key_env=self.cfg.api_key_env,
+                max_retries=self.cfg.max_retries,
+                retry_backoff=self.cfg.retry_backoff,
+                timeout=self.cfg.timeout,
+                label="primary LLM",
+            )
+
         from .key_pool import GLOBAL_KEY_POOL
         keys = GLOBAL_KEY_POOL.get_keys() or [os.environ.get(self.cfg.api_key_env, "").strip()]
         last_exc: Exception | None = None
 
-        total_attempts = max(self.cfg.max_retries, len(keys) * 2)
+        total_attempts = max(1, self.cfg.max_retries)
         for attempt in range(1, total_attempts + 1):
             key = keys[(attempt - 1) % len(keys)] if keys else ""
             if not key:
@@ -252,6 +315,106 @@ class LLMClient:
                 )
                 time.sleep(delay)
         raise LLMParseError(f"LLM call failed after {total_attempts} attempts: {last_exc}")
+
+    def _invoke_fallback_with_retry(
+        self,
+        messages: list[dict[str, str]],
+        fallback: ModelFallbackConfig,
+    ) -> str:
+        if fallback.provider != "openai-compatible":
+            raise ConfigError(
+                "Only openai-compatible LLM fallback endpoints are currently supported"
+            )
+        return self._invoke_openai_with_retry(
+            messages=messages,
+            model=fallback.model,
+            base_url=fallback.base_url,
+            api_key_env=fallback.api_key_env,
+            max_retries=fallback.max_retries,
+            retry_backoff=fallback.retry_backoff,
+            timeout=fallback.timeout,
+            label="fallback LLM",
+        )
+
+    def _invoke_openai_with_retry(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        model: str,
+        base_url: str | None,
+        api_key_env: str | None,
+        max_retries: int,
+        retry_backoff: float,
+        timeout: int,
+        label: str,
+    ) -> str:
+        last_exc: Exception | None = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                return self._call_openai(
+                    messages=messages,
+                    model=model,
+                    base_url=base_url,
+                    api_key_env=api_key_env,
+                    timeout=timeout,
+                )
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                if attempt == max_retries or not _is_retryable(exc):
+                    raise
+                delay = min(retry_backoff ** attempt + random.uniform(0, 0.5), 10.0)
+                log.warning(
+                    "%s call failed (attempt %d/%d): %s - retrying in %.1fs",
+                    label,
+                    attempt,
+                    max_retries,
+                    exc,
+                    delay,
+                )
+                time.sleep(delay)
+        raise LLMParseError(f"{label} failed: {last_exc}")  # pragma: no cover
+
+    def _call_openai(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        model: str,
+        base_url: str | None,
+        api_key_env: str | None,
+        timeout: int,
+    ) -> str:
+        """POST one text completion to an OpenAI-compatible endpoint."""
+        import requests
+
+        if not base_url:
+            raise ConfigError("An OpenAI-compatible LLM requires base_url")
+        headers = {"Accept": "application/json"}
+        api_key = os.environ.get(api_key_env, "").strip() if api_key_env else ""
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        response = requests.post(
+            base_url.rstrip("/") + "/chat/completions",
+            json={
+                "model": model,
+                "messages": messages,
+                "temperature": self.cfg.temperature,
+                "top_p": self.cfg.top_p,
+                "max_tokens": self.cfg.max_tokens,
+            },
+            headers=headers,
+            timeout=timeout,
+        )
+        if response.status_code >= 400:
+            raise LLMParseError(
+                f"LLM HTTP {response.status_code}: {response.text[:400]}"
+            )
+        data = response.json()
+        try:
+            return _response_text(data["choices"][0]["message"]["content"])
+        except (KeyError, IndexError, TypeError) as exc:
+            raise LLMParseError(
+                f"Invalid OpenAI-compatible LLM response: {str(data)[:400]}"
+            ) from exc
 
 
 def _is_retryable(exc: Exception) -> bool:

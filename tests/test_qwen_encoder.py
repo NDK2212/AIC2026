@@ -153,6 +153,36 @@ def test_visual_searcher_graceful_degradation_when_qwen_fails():
         assert set(vectors_sent.keys()) == {"siglip", "beit3"}
 
 
+def test_visual_searcher_keeps_other_vectors_when_qwen_fails_during_encode():
+    """A runtime failure in one loaded encoder must not zero the visual path."""
+    cfg = Config.load("config/config.yaml")
+    mock_qdrant = MagicMock()
+    mock_qdrant.hybrid_search.return_value = [
+        {"id": "p1", "score": 0.8, "payload": {"video_name": "L24_V001", "frame_id": 100}}
+    ]
+    searcher = VisualSearcher(cfg, mock_qdrant)
+
+    def fake_get_encoder(enc_cfg, cache=None):
+        mock_enc = MagicMock()
+        mock_enc.dim = enc_cfg.dim
+        if enc_cfg.name == "qwen":
+            mock_enc.encode_one.side_effect = AttributeError(
+                "BaseModelOutputWithPooling has no attribute detach"
+            )
+        else:
+            mock_enc.encode_one.return_value = np.zeros(enc_cfg.dim, dtype=np.float32)
+        return mock_enc
+
+    with patch("src.embedding.get_encoder", side_effect=fake_get_encoder):
+        candidates = searcher.search("a scene description", limit=50)
+
+    assert len(candidates) == 1
+    assert "qwen" in searcher._degraded
+    vectors_sent = mock_qdrant.hybrid_search.call_args[0][0]
+    assert "siglip" in vectors_sent
+    assert "qwen" not in vectors_sent
+
+
 # ==============================================================================
 # 4. Full Pipeline Multi-Path Execution Test
 # ==============================================================================

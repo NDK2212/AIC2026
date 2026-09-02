@@ -153,6 +153,7 @@ class QdrantWrapper:
         vectors: dict[str, np.ndarray],
         limit: int,
         prefetch_limit: int | None = None,
+        video_ids: Sequence[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Search several named vectors at once, fused inside Qdrant.
 
@@ -168,15 +169,19 @@ class QdrantWrapper:
             # preserves the real similarity scores instead of replacing them
             # with reciprocal-rank values.
             name, vector = next(iter(vectors.items()))
-            return self._single_search(name, vector, limit)
+            return self._single_search(name, vector, limit, video_ids=video_ids)
 
         if self.cfg.fusion == "manual":
             log.info("qdrant.fusion=manual - running one search per vector")
-            return self._multi_single_search(vectors, limit, prefetch_limit)
+            return self._multi_single_search(
+                vectors, limit, prefetch_limit, video_ids=video_ids
+            )
 
         if self._query_api_ok is not False:
             try:
-                return self._fused_query(vectors, limit, prefetch_limit)
+                return self._fused_query(
+                    vectors, limit, prefetch_limit, video_ids=video_ids
+                )
             except Exception as exc:  # noqa: BLE001
                 if _looks_unsupported(exc):
                     self._query_api_ok = False
@@ -186,18 +191,23 @@ class QdrantWrapper:
                     )
                 else:
                     raise
-        return self._multi_single_search(vectors, limit, prefetch_limit)
+        return self._multi_single_search(
+            vectors, limit, prefetch_limit, video_ids=video_ids
+        )
 
     def _fused_query(
-        self, vectors: dict[str, np.ndarray], limit: int, prefetch_limit: int
+        self, vectors: dict[str, np.ndarray], limit: int, prefetch_limit: int,
+        video_ids: Sequence[str] | None = None,
     ) -> list[dict[str, Any]]:
         """One ``query_points`` call with N prefetch branches + server fusion."""
         models = self.models
+        query_filter = self._video_filter(video_ids)
         prefetch = [
             models.Prefetch(
                 query=_as_list(vec),
                 using=name,
                 limit=prefetch_limit,
+                filter=query_filter,
             )
             for name, vec in vectors.items()
         ]
@@ -218,7 +228,8 @@ class QdrantWrapper:
         return [_point_to_dict(p) for p in points]
 
     def _multi_single_search(
-        self, vectors: dict[str, np.ndarray], limit: int, prefetch_limit: int
+        self, vectors: dict[str, np.ndarray], limit: int, prefetch_limit: int,
+        video_ids: Sequence[str] | None = None,
     ) -> list[dict[str, Any]]:
         """One search per named vector, returned separately for client fusion.
 
@@ -227,7 +238,9 @@ class QdrantWrapper:
         """
         out: list[dict[str, Any]] = []
         for name, vec in vectors.items():
-            hits = self._single_search(name, vec, max(limit, prefetch_limit))
+            hits = self._single_search(
+                name, vec, max(limit, prefetch_limit), video_ids=video_ids
+            )
             for rank, hit in enumerate(hits, start=1):
                 hit["_vector"] = name
                 hit["_rank"] = rank
@@ -235,10 +248,12 @@ class QdrantWrapper:
         return out
 
     def _single_search(
-        self, name: str, vector: np.ndarray, limit: int
+        self, name: str, vector: np.ndarray, limit: int,
+        video_ids: Sequence[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Search one named vector, preferring the Query API when it works."""
         query = _as_list(vector)
+        query_filter = self._video_filter(video_ids)
         if self._query_api_ok is not False:
             try:
                 response = self.client.query_points(
@@ -247,6 +262,7 @@ class QdrantWrapper:
                     using=name,
                     limit=limit,
                     with_payload=True,
+                    query_filter=query_filter,
                 )
                 self._query_api_ok = True
                 return [_point_to_dict(p) for p in getattr(response, "points", response)]
@@ -261,8 +277,26 @@ class QdrantWrapper:
             query_vector=(name, query) if name else query,
             limit=limit,
             with_payload=True,
+            query_filter=query_filter,
         )
         return [_point_to_dict(p) for p in points]
+
+    def _video_filter(self, video_ids: Sequence[str] | None) -> Any | None:
+        """Build a Qdrant payload filter restricted to the requested videos."""
+        if not video_ids:
+            return None
+        clean_ids = sorted({str(v).removesuffix(".mp4") for v in video_ids if str(v).strip()})
+        accepted_ids = [item for v in clean_ids for item in (v, f"{v}.mp4")]
+        if not accepted_ids:
+            return None
+        return self.models.Filter(
+            must=[
+                self.models.FieldCondition(
+                    key=self.cfg.payload["video_id"],
+                    match=self.models.MatchAny(any=accepted_ids),
+                )
+            ]
+        )
 
 
 def _looks_unsupported(exc: Exception) -> bool:

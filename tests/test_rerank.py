@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 import pytest
+import torch
 
-from src.config import BGERerankConfig
-from src.retrieval.rerank import BGEReranker
+from src.config import BGERerankConfig, Qwen3VLRerankConfig
+from src.retrieval.rerank import BGEReranker, Qwen3VLReranker
 from src.schemas import Candidate
 
 
@@ -100,3 +101,92 @@ def test_bge_reranker_disabled_or_empty():
     assert reranker.rerank("query", [c1]) == [c1]
     assert reranker.rerank("", [c1]) == [c1]
     assert reranker.rerank("query", []) == []
+
+
+def test_qwen3_vl_reranks_fused_images_once_with_metadata():
+    cfg = Qwen3VLRerankConfig(enabled=True, device="cuda", top_n=2, weight=1.0)
+    kf = MagicMock()
+    image_a, image_b = object(), object()
+    kf.batch_get_images.return_value = {
+        ("L01_V001", 100): image_a,
+        ("L01_V002", 200): image_b,
+    }
+    reranker = Qwen3VLReranker(cfg, kf)
+    reranker._model = MagicMock()  # bypass heavyweight lazy loading
+    reranker._score_pair = MagicMock(side_effect=[0.1, 0.95])
+    candidates = [
+        make_cand(
+            "L01_V001", 100, 0.8, "fused",
+            {"description_matched": "người đi bộ"},
+        ),
+        make_cand(
+            "L01_V002", 200, 0.3, "fused",
+            {"description_matched": "đầu bếp sơ chế cá"},
+        ),
+    ]
+
+    results = reranker.rerank("đầu bếp chuẩn bị cá", candidates)
+
+    assert results[0].video_id == "L01_V002"
+    assert results[0].extra["qwen3_vl_rerank_score"] == 0.95
+    assert reranker._score_pair.call_args_list[1].kwargs == {
+        "text": "Description: đầu bếp sơ chế cá",
+        "image": image_b,
+    }
+
+
+def test_qwen3_vl_tokenize_converts_multimodal_token_types_to_tensor():
+    class FakeTokenizer:
+        all_special_ids = [99]
+        padding_side = "left"
+
+        @staticmethod
+        def pad(payload, **_kwargs):
+            rows = payload["input_ids"]
+            return {
+                "input_ids": torch.tensor(rows, dtype=torch.long),
+                "attention_mask": torch.ones((len(rows), len(rows[0])), dtype=torch.long),
+            }
+
+    class FakeProcessor:
+        tokenizer = FakeTokenizer()
+
+        @staticmethod
+        def apply_chat_template(*_args, **_kwargs):
+            return ["rendered"]
+
+        @staticmethod
+        def __call__(**_kwargs):
+            return {
+                "input_ids": [[1, 2, 3, 4, 5, 6]],
+                "mm_token_type_ids": [[0, 0, 1, 1, 0, 0]],
+            }
+
+    cfg = Qwen3VLRerankConfig(enabled=True, max_length=16)
+    reranker = Qwen3VLReranker(cfg)
+    reranker._torch = torch
+    reranker._processor = FakeProcessor()
+    reranker._process_vision_info = lambda *_args, **_kwargs: (None, None, {})
+
+    inputs = reranker._tokenize([{"role": "user", "content": []}])
+
+    assert isinstance(inputs["mm_token_type_ids"], torch.Tensor)
+    assert inputs["mm_token_type_ids"].dtype == torch.long
+    assert inputs["mm_token_type_ids"].shape == inputs["input_ids"].shape
+
+
+def test_embedding_devices_are_cpu_and_qwen_reranker_is_cuda():
+    from src.config import Config
+
+    cfg = Config.load("config/config.yaml", no_cache=True)
+
+    assert cfg.embedding.siglip.device == "cpu"
+    assert cfg.embedding.beit3.device == "cpu"
+    assert cfg.embedding.qwen is not None and cfg.embedding.qwen.device == "cpu"
+    assert cfg.embedding.qwen.enabled is True
+    assert cfg.rerank.qwen3_vl.enabled is True
+    assert cfg.rerank.qwen3_vl.device == "cuda"
+    assert cfg.rerank.qwen3_vl.torch_dtype == "float16"
+    assert cfg.rerank.qwen3_vl.max_pixels == 401408
+    assert cfg.rerank.blip2.enabled is False
+    assert cfg.rerank.bge.enabled is False

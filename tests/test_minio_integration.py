@@ -107,6 +107,32 @@ def test_keyframe_index_with_minio(tmp_path):
     assert ("L21_V001", 4) in batch_res
 
 
+def test_minio_fills_an_exact_frame_missing_from_a_local_video(tmp_path):
+    root = tmp_path / "keyframes" / "L21_V001"
+    root.mkdir(parents=True)
+    Image.new("RGB", (16, 16), color="red").save(
+        root / "scene_0000_frame_000002_0.jpg"
+    )
+    mock_minio = MagicMock(spec=MinioKeyframeClient)
+    mock_minio.enabled = True
+    mock_minio.discover_video_frames.return_value = {
+        4: "keyframes/batch_1/L21_V001/scene_0001_frame_000004_0.jpg"
+    }
+    mock_minio.get_image.return_value = Image.new("RGB", (24, 24), color="blue")
+    index = KeyframeIndex(
+        root=tmp_path / "keyframes",
+        minio=mock_minio,
+        cache_dir=tmp_path / "cache",
+    )
+
+    image = index.get_image("L21_V001", 4)
+
+    assert image is not None and image.size == (24, 24)
+    mock_minio.get_image.assert_called_once_with(
+        "keyframes/batch_1/L21_V001/scene_0001_frame_000004_0.jpg"
+    )
+
+
 def test_blip_reranker_with_keyframe_index(tmp_path):
     kf = MagicMock(spec=KeyframeIndex)
     test_img = Image.new("RGB", (224, 224), color="green")

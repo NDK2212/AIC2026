@@ -193,7 +193,25 @@ def decompose(
         result.image_query = translate_to_english_visual(llm, result.image_query, use_cache=use_cache)
 
     _finalise_weights(result, adaptive_floor, default_weights or {})
-    log.debug("Decomposed %r -> %s", cleaned[:60], result.to_dict())
+    result_dict = result.to_dict()
+    log.debug(
+        "Decomposed %r -> %s",
+        cleaned[:60],
+        result_dict,
+        extra={"progress": {
+            "phase": "decompose",
+            "status": "done",
+            "title": "Decompose hoàn tất",
+            "detail": ", ".join(result.modalities) or "raw query fallback",
+            "inspector": {
+                "Visual query": result.image_query or "",
+                "Description query": result.description_query or "",
+                "OCR terms": ", ".join(result.ocr_terms),
+                "ASR terms": ", ".join(result.asr_terms),
+                "Weights": str(result.modality_weights),
+            },
+        }},
+    )
     return result
 
 

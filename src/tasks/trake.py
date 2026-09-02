@@ -280,6 +280,7 @@ def retrieve_steps(
     *,
     trace_name: str | None = None,
     use_cache: bool = True,
+    pipeline_options: dict[str, object] | None = None,
 ) -> list[list[Candidate]]:
     """Retrieve candidates for every step, running the steps in parallel."""
 
@@ -310,6 +311,7 @@ def retrieve_steps(
                 decompose_result=step.decompose,
                 trace_name=f"{trace_name or 'trake'}-step{step.index}",
                 use_cache=use_cache,
+                **(pipeline_options or {}),
             )
             return candidates
         except Exception as exc:  # noqa: BLE001 - one bad step must not kill the task
@@ -824,6 +826,7 @@ def run_trake(
     *,
     trace_name: str | None = None,
     use_cache: bool = True,
+    pipeline_options: dict[str, object] | None = None,
 ) -> tuple[list[list[object]], TrakePlan]:
     """Run the whole TRAKE task.
 
@@ -832,7 +835,8 @@ def run_trake(
     """
     plan = plan_trake(pipeline.llm, query, cfg, use_cache=use_cache)
     step_candidates = retrieve_steps(
-        plan, pipeline, cfg, trace_name=trace_name, use_cache=use_cache
+        plan, pipeline, cfg, trace_name=trace_name, use_cache=use_cache,
+        pipeline_options=pipeline_options,
     )
     normalized = normalize_step_scores(step_candidates)
 

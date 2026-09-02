@@ -11,14 +11,14 @@ query
   │
   ├─ OCR    ─► Elasticsearch (ocr_text)              ─► top-K
   ├─ ASR    ─► Elasticsearch (asr_text)              ─► top-K
-  └─ VISUAL ─► SigLIP + BEiT-3 text towers ─► Qdrant ─► BLIP-2 ITM Rerank ─► top-K
-                 (one query, two prefetch branches, RRF/DBSF inside Qdrant)
+  └─ VISUAL ─► SigLIP + BEiT-3 + Qwen3-VL text towers ─► Qdrant ─► top-K
+                 (embedding models on CPU; vector fusion inside Qdrant)
                             │
                             ▼
               Weighted RRF (Adaptive Score Fusion)
                             │
                             ▼
-                 BGE Cross-Encoder Rerank (top-N fused)
+          Qwen3-VL-Reranker-2B (top-N fused, image + metadata, GPU)
                             │
         ┌───────────────────┼───────────────────┐
         ▼                   ▼                   ▼
@@ -30,12 +30,17 @@ query
 
 ## 1. Install
 
-```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+Requirements: Python 3.10+ and Node.js 20+ with `npm`.
 
-cp .env.example .env      # then fill in your keys
+```bash
+make install
 ```
+
+This creates `.venv`, installs every Python dependency from `requirements.txt`,
+and runs `npm ci` for the React frontend. It also creates `.env` from
+`.env.example` only when `.env` does not already exist. Make commands invoke
+`.venv/bin/python` directly, so manual virtual-environment activation is not
+required.
 
 `.env` holds every secret — nothing is ever hard-coded in the source:
 
@@ -46,6 +51,7 @@ cp .env.example .env      # then fill in your keys
 | `ES_USER` / `ES_PASSWORD` | Elasticsearch basic auth |
 | `ES_API_KEY` | Elasticsearch API-key auth (instead of user/password) |
 | `VLM_API_KEY` | a separate vision endpoint; falls back to `NVIDIA_API_KEY` |
+| `VLM_MODEL` | primary multimodal model id; defaults to `moonshotai/kimi-k3` |
 
 ---
 
@@ -80,6 +86,9 @@ on SigLIP alone. To make that explicit, set `embedding.beit3.enabled: false`.
 
 ## 3. Run
 
+For direct CLI commands, activate the environment once with
+`source .venv/bin/activate`; the `make` commands below do not require this.
+
 ```bash
 # debug the decomposition prompt
 python -m src.cli decompose --query "Tìm video có người mặc áo đỏ..."
@@ -104,6 +113,46 @@ Global flags: `--config`, `--no-cache`, `-v/--verbose`, `--dry-run`.
 
 `batch` never stops on a single failing query — it logs the error, continues,
 and prints a success/failure table at the end.
+
+### React web workbench
+
+Run only the FastAPI backend (including the committed production React bundle):
+
+```bash
+make backend
+```
+
+Open <http://localhost:7860>. Interactive API documentation is available at
+<http://localhost:7860/api/docs> and the OpenAPI schema at
+<http://localhost:7860/api/openapi.json>.
+
+Run only the Vite development server with hot reload:
+
+```bash
+make frontend
+```
+
+Open <http://localhost:5173>. Vite proxies `/api/*` to FastAPI at port `7860`,
+so the backend must also be running for search and image requests.
+
+Run both development servers together:
+
+```bash
+make full
+```
+
+Press `Ctrl+C` once to stop both processes. Host, port and config can be
+overridden without editing the Makefile, for example:
+
+```bash
+make backend BACKEND_PORT=8000 CONFIG=config/config.yaml
+make frontend FRONTEND_PORT=3000
+```
+
+`make full BACKEND_PORT=8000` also passes the matching backend URL to Vite's
+proxy automatically. To use another backend host, set `BACKEND_URL`, for example
+`make frontend BACKEND_URL=http://192.168.1.10:8000`. To rebuild the production
+bundle served by FastAPI after frontend changes, run `make build-frontend`.
 
 ### Debugging a bad result
 
@@ -135,7 +184,7 @@ Scoring is `R@k = max` over the first `k` rows, averaged over
 
 1. An LLM reads the query and emits `N` chronologically ordered key moments —
    `N` is taken from the query itself when it states one.
-2. Every step is retrieved independently through the normal three-path pipeline
+2. Every step is retrieved independently through the normal four-path pipeline
    (steps run in parallel).
 3. Step scores are min-max normalised **per step**, so no step dominates the
    objective and `miss_penalty` means the same thing everywhere.
@@ -209,9 +258,25 @@ into range automatically.
 | `model` | model id (`vlm.model` must be a vision model) |
 | `temperature`, `top_p`, `max_tokens` | sampling |
 | `enable_thinking` | `<think>` blocks; the JSON parser strips them |
-| `max_retries`, `retry_backoff` | retries on 429/5xx and on unparsable JSON |
+| `max_retries`, `retry_backoff` | transport retries on timeout, 429 and 5xx |
+| `llm.json_retries` | retries when a completion is not valid JSON |
+| `timeout` | HTTP timeout in seconds for OpenAI-compatible providers |
+| `fallback.*` | secondary provider/model/base URL used after the primary fails |
 | `vlm.max_workers` | frames asked in parallel |
 | `vlm.image_max_side` | downscale before base64 to save tokens |
+
+VQA defaults to multimodal mode. For each candidate video, Kimi K3 receives up
+to `vqa.vlm_images_per_video` action/evidence frames in one request. Each image
+is interleaved with its Description, OCR and ASR metadata, so the model can use
+both the pixels and the indexed text when answering. The primary model comes
+from `VLM_MODEL` in `.env` (the existing `VLM_model` spelling is also accepted).
+
+The default configuration makes one NVIDIA/Kimi attempt and then falls back to
+the local Ollama OpenAI-compatible endpoint at `http://127.0.0.1:11434/v1`,
+using `qwen3-vl:2b-instruct`. The same multi-image and metadata payload is sent
+to the fallback. After a primary timeout, that client stays on the local
+fallback until the backend is restarted, avoiding another remote timeout for
+every candidate video.
 
 ### `fusion`
 | key | meaning |
@@ -236,8 +301,13 @@ into range automatically.
 ### `vqa`
 | key | meaning |
 |---|---|
-| `vlm_top_n` | how many representative frames reach the VLM |
-| `propagate` | reuse a shot's answer for its other rows |
+| `mode` | `vision` (default: images + Description/OCR/ASR) or `text_only` |
+| `vlm_top_n` | how many representative action-scene frames reach the answerer |
+| `vlm_images_per_video` | maximum action/evidence images combined in one VLM request per video |
+| `cross_shot_evidence` | search answer-bearing shots elsewhere in the same candidate videos |
+| `evidence_video_top_n` | number of top scene-matched videos searched for secondary evidence |
+| `evidence_top_n` | maximum secondary evidence frames sent to the answerer |
+| `propagate` | reuse answers within the same shot/video before global fallback |
 | `answer_max_chars` | hard limit (100 per the rules) |
 | `fallback_answer` | used when everything is UNKNOWN — never left empty |
 
@@ -255,9 +325,10 @@ into range automatically.
 | `head_min_videos` / `head_window` | video spread required in the head |
 
 ### `rerank`, `cache`, `runs`
-`rerank.blip2` wires an optional BLIP-2 ITM pass inside the visual path (`enabled: false` by default).
-`rerank.bge` wires an optional BGE Cross-Encoder pass on top fused candidates (`enabled: false` by default).
-Both can be A/B tested independently via `config.yaml`. `cache.dir` holds the LLM,
+`rerank.qwen3_vl` applies `Qwen/Qwen3-VL-Reranker-2B` once to the fused top-N.
+It scores the query against each keyframe image plus available Description/OCR/ASR
+metadata. The embedding models use CPU while this reranker uses CUDA. Legacy
+`rerank.blip2` and `rerank.bge` remain parse-compatible but are disabled. `cache.dir` holds the LLM,
 VLM, embedding and keyframe-index caches — reruns cost no quota. `runs.dir`
 holds the per-query JSON traces and `run.log`.
 

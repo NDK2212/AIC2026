@@ -106,14 +106,10 @@ const el = {
   valWeightDesc: document.getElementById("valWeightDesc"),
   rngWeightVis: document.getElementById("rngWeightVis"),
   valWeightVis: document.getElementById("valWeightVis"),
-  rngBlipTopN: document.getElementById("rngBlipTopN"),
-  valBlipTopN: document.getElementById("valBlipTopN"),
-  rngBlipWeight: document.getElementById("rngBlipWeight"),
-  valBlipWeight: document.getElementById("valBlipWeight"),
-  rngBgeTopN: document.getElementById("rngBgeTopN"),
-  valBgeTopN: document.getElementById("valBgeTopN"),
-  rngBgeWeight: document.getElementById("rngBgeWeight"),
-  valBgeWeight: document.getElementById("valBgeWeight"),
+  rngQwenTopN: document.getElementById("rngQwenTopN"),
+  valQwenTopN: document.getElementById("valQwenTopN"),
+  rngQwenWeight: document.getElementById("rngQwenWeight"),
+  valQwenWeight: document.getElementById("valQwenWeight"),
   rngVlmTopN: document.getElementById("rngVlmTopN"),
   valVlmTopN: document.getElementById("valVlmTopN"),
 
@@ -193,10 +189,8 @@ function setupEventListeners() {
   bindSlider("rngWeightAsr", "valWeightAsr");
   bindSlider("rngWeightDesc", "valWeightDesc");
   bindSlider("rngWeightVis", "valWeightVis");
-  bindSlider("rngBlipTopN", "valBlipTopN");
-  bindSlider("rngBlipWeight", "valBlipWeight");
-  bindSlider("rngBgeTopN", "valBgeTopN");
-  bindSlider("rngBgeWeight", "valBgeWeight");
+  bindSlider("rngQwenTopN", "valQwenTopN");
+  bindSlider("rngQwenWeight", "valQwenWeight");
   bindSlider("rngVlmTopN", "valVlmTopN");
 
   // VQA Mode Radio Cards
@@ -259,10 +253,8 @@ function applyConfigToUI(cfg) {
     setVal("rngWeightVis", "valWeightVis", cfg.retrieval_paths.visual.weight);
   }
   if (cfg.rerank) {
-    setVal("rngBlipTopN", "valBlipTopN", cfg.rerank.blip2.top_n);
-    setVal("rngBlipWeight", "valBlipWeight", cfg.rerank.blip2.weight);
-    setVal("rngBgeTopN", "valBgeTopN", cfg.rerank.bge.top_n);
-    setVal("rngBgeWeight", "valBgeWeight", cfg.rerank.bge.weight);
+    setVal("rngQwenTopN", "valQwenTopN", cfg.rerank.qwen3_vl.top_n);
+    setVal("rngQwenWeight", "valQwenWeight", cfg.rerank.qwen3_vl.weight);
   }
   if (cfg.vqa) {
     setVal("rngVlmTopN", "valVlmTopN", cfg.vqa.vlm_top_n);
@@ -303,7 +295,7 @@ async function saveApiKeys() {
     });
     const data = await res.json();
     if (data.success) {
-      el.keySaveStatus.textContent = `✅ Đã lưu ${data.count} keys thành công!`;
+      el.keySaveStatus.textContent = `Đã lưu ${data.count} keys`;
       el.keysCountLabel.textContent = `${data.count} Key(s)`;
       loadServerStatus();
       setTimeout(() => {
@@ -322,7 +314,7 @@ function renderKeyChips(maskedList) {
   maskedList.forEach((k) => {
     const chip = document.createElement("span");
     chip.className = "key-chip";
-    chip.textContent = `🔑 ${k}`;
+    chip.textContent = k;
     el.activeKeyChips.appendChild(chip);
   });
 }
@@ -353,7 +345,7 @@ function switchTask(task) {
 
   el.resultsGallery.innerHTML = `
     <div class="empty-state">
-      <div class="empty-icon">${task === "kis" ? "🎯" : task === "vqa" ? "💬" : "⏱️"}</div>
+      <div class="empty-icon">${task.toUpperCase()}</div>
       <div class="empty-title">Tác vụ ${task.toUpperCase()} sẵn sàng</div>
       <div class="empty-desc">Nhập câu hỏi hoặc chọn mẫu bên trên rồi nhấn <strong>TÌM KIẾM</strong>.</div>
     </div>
@@ -484,16 +476,16 @@ function collectCurrentParams() {
       },
     },
     rerank: {
-      blip2: {
-        enabled: document.getElementById("chkBlipRerank").checked,
-        top_n: parseInt(el.rngBlipTopN.value, 10),
-        weight: parseFloat(el.rngBlipWeight.value),
+      qwen3_vl: {
+        enabled: document.getElementById("chkQwenRerank").checked,
+        top_n: parseInt(el.rngQwenTopN.value, 10),
+        weight: parseFloat(el.rngQwenWeight.value),
       },
-      bge: {
-        enabled: document.getElementById("chkBgeRerank").checked,
-        top_n: parseInt(el.rngBgeTopN.value, 10),
-        weight: parseFloat(el.rngBgeWeight.value),
-      },
+    },
+    fusion: {
+      method: document.getElementById("selFusionMethod").value,
+      rrf_k: parseInt(document.getElementById("numRrfK").value, 10),
+      adaptive: document.getElementById("chkAdaptiveWeights").checked,
     },
     vqa: {
       vlm_top_n: parseInt(el.rngVlmTopN.value, 10),
@@ -503,6 +495,12 @@ function collectCurrentParams() {
       per_step_topk: parseInt(document.getElementById("numTrakeTopk").value, 10),
       coverage_bonus: parseFloat(document.getElementById("numCoverageBonus").value),
       miss_penalty: parseFloat(document.getElementById("numMissPenalty").value),
+    },
+    submission: {
+      shot_window: parseInt(document.getElementById("numShotWindow").value, 10),
+      top_diverse: parseInt(document.getElementById("numTopDiverse").value, 10),
+      head_max_per_video: parseInt(document.getElementById("numHeadMaxPerVideo").value, 10),
+      neighbor_expansion: document.getElementById("chkNeighborExpansion").checked,
     },
   };
 }
@@ -526,10 +524,15 @@ function setStepDone(stepEl, detailText) {
 }
 
 function completePipelineSteps(data) {
-  setStepDone(el.stepDecomp, "Hoàn tất phân tích câu hỏi");
-  setStepDone(el.stepRetrieval, "Đã truy vấn 4 nhánh song song");
-  setStepDone(el.stepRerank, "Hoàn tất BLIP-1 / BGE & Weighted RRF");
-  setStepDone(el.stepPost, `Đã xuất ${data.total_results} candidates`);
+  const task = data.task || state.currentTask;
+  const trace = data.trace && data.trace.stages ? data.trace.stages : [];
+  const stageMs = (index) => trace[index] && trace[index].latency_ms
+    ? ` · ${trace[index].latency_ms} ms`
+    : "";
+  setStepDone(el.stepDecomp, `${task === "vqa" ? "Đã tách scene, question và evidence" : "Hoàn tất phân tích truy vấn"}${stageMs(0)}`);
+  setStepDone(el.stepRetrieval, `${task === "vqa" ? "Đã tìm action frame trong video ứng viên" : "Đã truy vấn các retrieval path đang bật"}${stageMs(1)}`);
+  setStepDone(el.stepRerank, "Đã fusion và Qwen3-VL rerank fused candidates");
+  setStepDone(el.stepPost, `${task === "vqa" ? "Đã tìm evidence cùng video và tạo đáp án" : "Đã hoàn tất hậu xử lý"} · ${data.total_results || 0} kết quả`);
 
   if (data.decomposition) {
     el.decompDetailsCard.style.display = "block";
@@ -537,6 +540,12 @@ function completePipelineSteps(data) {
     el.decValOcr.textContent = (data.decomposition.ocr_terms || []).join(", ") || "Không có";
     el.decValAsr.textContent = (data.decomposition.asr_terms || []).join(", ") || "Không có";
     el.decValWeights.textContent = JSON.stringify(data.decomposition.modality_weights || {});
+  } else if (data.split) {
+    el.decompDetailsCard.style.display = "block";
+    el.decValVisual.textContent = data.split.scene || "Không có";
+    el.decValOcr.textContent = data.split.question || "Không có";
+    el.decValAsr.textContent = data.split.evidence_query || "Không có";
+    el.decValWeights.textContent = data.split.type || "other";
   }
 }
 
@@ -546,7 +555,7 @@ function completePipelineSteps(data) {
 function renderKisResults(candidates) {
   el.resultsGallery.innerHTML = "";
   if (!candidates || candidates.length === 0) {
-    el.resultsGallery.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-title">Không tìm thấy kết quả phù hợp</div></div>`;
+    el.resultsGallery.innerHTML = `<div class="empty-state"><div class="empty-icon">0</div><div class="empty-title">Không tìm thấy kết quả phù hợp</div></div>`;
     return;
   }
 
@@ -570,10 +579,10 @@ function renderKisResults(candidates) {
         </div>
         <div class="card-actions">
           <button class="btn-card-action btn-pin-top1" onclick="pinCandidateToTop1(${idx})" title="Đưa frame này lên vị trí Top 1">
-            ⭐ Đẩy lên #1
+            Ghim Top 1
           </button>
           <button class="btn-card-action" onclick="openNeighborModal('${cand.video_id}', ${cand.frame_id}, ${idx + 1}, ${idx})" title="Xem 25 frame liên tiếp">
-            🎞️ 25 Frame
+            Xem 25 frame
           </button>
         </div>
       </div>
@@ -588,7 +597,7 @@ function renderKisResults(candidates) {
 function renderVqaResults(candidates) {
   el.resultsGallery.innerHTML = "";
   if (!candidates || candidates.length === 0) {
-    el.resultsGallery.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-title">Không tìm thấy kết quả phù hợp</div></div>`;
+    el.resultsGallery.innerHTML = `<div class="empty-state"><div class="empty-icon">0</div><div class="empty-title">Không tìm thấy kết quả phù hợp</div></div>`;
     return;
   }
 
@@ -596,16 +605,28 @@ function renderVqaResults(candidates) {
     const isTop1 = idx === 0;
     const key = `${cand.video_id}_${cand.frame_id}`;
     const currentAnswer = state.vqaOverrides[key] !== undefined ? state.vqaOverrides[key] : cand.answer || "unknown";
+    const evidenceHtml = (cand.evidence_frames || []).length
+      ? `<div class="vqa-evidence-box">
+          <div class="vqa-evidence-label">Frame bằng chứng trong cùng video</div>
+          <div class="vqa-evidence-strip">
+            ${(cand.evidence_frames || []).map((e) => `
+              <button class="vqa-evidence-item" type="button" onclick="openNeighborModal('${e.video_id}', ${e.frame_id}, ${idx + 1}, ${idx})" title="Mở frame bằng chứng ${e.frame_id}">
+                <img src="${e.image_url}" loading="lazy" alt="Evidence frame ${e.frame_id}">
+                <span>F:${e.frame_id}</span>
+              </button>`).join("")}
+          </div>
+        </div>`
+      : "";
 
     const card = document.createElement("div");
-    card.className = `candidate-card ${isTop1 && state.promotedTop1Key ? "promoted-top1" : ""}`;
+    card.className = `candidate-card ${(cand.evidence_frames || []).length ? "has-evidence" : ""} ${isTop1 && state.promotedTop1Key ? "promoted-top1" : ""}`;
     card.id = `cand-card-${cand.video_id}-${cand.frame_id}`;
 
     card.innerHTML = `
       <div class="card-thumb-wrap">
         <img class="card-thumb" src="${cand.image_url}" loading="lazy" alt="${cand.video_id}_${cand.frame_id}">
         <div class="rank-badge">#${idx + 1}</div>
-        ${cand.is_target ? '<span class="score-badge" style="background:rgba(16,185,129,0.2);border-color:#10b981;color:#10b981;">VLM Rep</span>' : ""}
+        ${cand.is_target ? '<span class="score-badge">Action frame</span>' : ""}
       </div>
       <div class="card-body">
         <div class="card-meta-row">
@@ -614,16 +635,18 @@ function renderVqaResults(candidates) {
         </div>
 
         <div class="vqa-answer-box">
-          <label class="vqa-answer-label">Đáp án dự đoán (Có thể chỉnh sửa):</label>
+          <label class="vqa-answer-label">Đáp án dự đoán, có thể chỉnh sửa</label>
           <input type="text" class="vqa-answer-input" value="${escapeHtml(currentAnswer)}" onchange="updateVqaAnswer('${cand.video_id}', ${cand.frame_id}, this.value)" placeholder="Nhập đáp án...">
         </div>
 
+        ${evidenceHtml}
+
         <div class="card-actions">
           <button class="btn-card-action btn-pin-top1" onclick="pinCandidateToTop1(${idx})" title="Đưa frame này lên vị trí Top 1">
-            ⭐ Đẩy lên #1
+            Ghim Top 1
           </button>
           <button class="btn-card-action" onclick="openNeighborModal('${cand.video_id}', ${cand.frame_id}, ${idx + 1}, ${idx})" title="Xem 25 frame liên tiếp">
-            🎞️ 25 Frame
+            Xem 25 frame
           </button>
         </div>
       </div>
@@ -643,7 +666,7 @@ function updateVqaAnswer(videoId, frameId, newText) {
 function renderTrakeResults(sequences, plan) {
   el.resultsGallery.innerHTML = "";
   if (!sequences || sequences.length === 0) {
-    el.resultsGallery.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-title">Không tìm thấy chuỗi sự kiện phù hợp</div></div>`;
+    el.resultsGallery.innerHTML = `<div class="empty-state"><div class="empty-icon">0</div><div class="empty-title">Không tìm thấy chuỗi sự kiện phù hợp</div></div>`;
     return;
   }
 
@@ -664,7 +687,7 @@ function renderTrakeResults(sequences, plan) {
         </div>
       `;
       if (sIdx < seq.steps.length - 1) {
-        stepsHtml += `<div class="trake-arrow">➔</div>`;
+        stepsHtml += `<div class="trake-arrow">→</div>`;
       }
     });
 
@@ -676,7 +699,7 @@ function renderTrakeResults(sequences, plan) {
           <span class="score-badge" style="position:static;">Score: ${seq.score.toFixed(4)}</span>
         </div>
         <div style="display:flex;gap:8px;">
-          <button class="btn-card-action btn-pin-top1" onclick="pinCandidateToTop1(${idx})">⭐ Đẩy chuỗi lên #1</button>
+          <button class="btn-card-action btn-pin-top1" onclick="pinCandidateToTop1(${idx})">Ghim chuỗi Top 1</button>
         </div>
       </div>
       <div class="trake-steps-filmstrip">

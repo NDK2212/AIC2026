@@ -36,22 +36,33 @@ class QwenTextEncoder(TextEncoder):
             ) from exc
         self._torch = torch
 
-        # Priority 1: Official Qwen3VLEmbedder script
-        try:
-            self._load_qwen3_vl_embedder()
-            return
-        except Exception as exc:
-            log.warning("Could not load via Qwen3VLEmbedder: %s. Trying sentence-transformers...", exc)
+        if self._backend == "qwen3_vl_embedder":
+            try:
+                self._load_qwen3_vl_embedder()
+                return
+            except Exception as exc:
+                raise EncoderUnavailable(
+                    f"Could not load Qwen3VLEmbedder: {exc}"
+                ) from exc
 
-        # Priority 2: SentenceTransformer
-        try:
-            self._load_sentence_transformers()
-            return
-        except Exception as exc:
-            log.warning("Could not load via sentence-transformers: %s. Trying transformers fallback...", exc)
+        if self._backend == "sentence_transformers":
+            try:
+                self._load_sentence_transformers()
+                return
+            except Exception as exc:
+                raise EncoderUnavailable(
+                    "Could not load Qwen via sentence-transformers. Install the "
+                    f"image dependencies with `make install`: {exc}"
+                ) from exc
 
-        # Priority 3: Transformers AutoModel fallback
-        self._load_transformers()
+        if self._backend == "transformers":
+            self._load_transformers()
+            return
+
+        raise EncoderUnavailable(
+            "embedding.qwen.backend must be sentence_transformers|"
+            f"qwen3_vl_embedder|transformers, got {self._backend!r}"
+        )
 
     def _load_qwen3_vl_embedder(self) -> None:
         import importlib.util
@@ -69,7 +80,7 @@ class QwenTextEncoder(TextEncoder):
             log.info("Loading Qwen3VLEmbedder (%s) on %s (dtype=%s)", self.cfg.model_id, self.cfg.device, dtype)
             self._embedder = qwen_mod.Qwen3VLEmbedder(
                 self.cfg.model_id,
-                dtype=dtype,
+                torch_dtype=dtype,
             )
             self._backend = "qwen3_vl_embedder"
         except Exception as exc:
@@ -77,30 +88,24 @@ class QwenTextEncoder(TextEncoder):
 
     def _load_sentence_transformers(self) -> None:
         import types
-        import sentence_transformers
         from sentence_transformers import SentenceTransformer
-        import sentence_transformers.models as st_models
+        from sentence_transformers.base.modules import Transformer
+        from sentence_transformers.sentence_transformer.modules import Normalize, Pooling
 
-        # Module aliasing for sentence_transformers 5.4.0 modules.json compatibility
-        m_base = types.ModuleType("sentence_transformers.base")
-        m_base_mod = types.ModuleType("sentence_transformers.base.modules")
+        # The Qwen checkpoint references old leaf-module paths. Alias only
+        # those leaves; replacing the parent packages removes Router and breaks
+        # sentence-transformers 6.x during model-card registration.
         m_base_mod_trans = types.ModuleType("sentence_transformers.base.modules.transformer")
-        m_base_mod_trans.Transformer = st_models.Transformer
+        m_base_mod_trans.Transformer = Transformer
 
         import sys
-        sys.modules["sentence_transformers.base"] = m_base
-        sys.modules["sentence_transformers.base.modules"] = m_base_mod
         sys.modules["sentence_transformers.base.modules.transformer"] = m_base_mod_trans
 
-        m_st = types.ModuleType("sentence_transformers.sentence_transformer")
-        m_st_mod = types.ModuleType("sentence_transformers.sentence_transformer.modules")
         m_st_mod_pool = types.ModuleType("sentence_transformers.sentence_transformer.modules.pooling")
-        m_st_mod_pool.Pooling = st_models.Pooling
+        m_st_mod_pool.Pooling = Pooling
         m_st_mod_norm = types.ModuleType("sentence_transformers.sentence_transformer.modules.normalize")
-        m_st_mod_norm.Normalize = st_models.Normalize
+        m_st_mod_norm.Normalize = Normalize
 
-        sys.modules["sentence_transformers.sentence_transformer"] = m_st
-        sys.modules["sentence_transformers.sentence_transformer.modules"] = m_st_mod
         sys.modules["sentence_transformers.sentence_transformer.modules.pooling"] = m_st_mod_pool
         sys.modules["sentence_transformers.sentence_transformer.modules.normalize"] = m_st_mod_norm
 

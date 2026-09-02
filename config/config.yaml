@@ -24,7 +24,7 @@ elasticsearch:
   hosts: ["https://elastic.viettech.fit"]
   index: "asr_ocr_merged"     # Alias trỏ sang video_metadata_merged_v1
   user: "elastic"
-  password: "1ND2kR_8MUQL_7t4G+kD"
+  password: null              # Tự động nạp từ ES_PASSWORD trong .env
   timeout: 60
   verify_certs: false
   fields:
@@ -49,7 +49,7 @@ embedding:
     model_id: "google/siglip-so400m-patch14-384"   # Khớp 100% với model lúc index
     pretrained: null                               # open_clip only
     dim: 1152
-    device: "auto"                                 # "auto" | "cuda" | "mps" | "cpu"
+    device: "cpu"                                  # keep embedding models off GPU
     max_length: 64
     batch_size: 16
   beit3:
@@ -59,15 +59,15 @@ embedding:
     checkpoint_path: "./.hf_cache/beit3/beit3_large_patch16_224.pth"
     tokenizer_path: "./.hf_cache/beit3/beit3.spm"
     dim: 1024
-    device: "auto"
+    device: "cpu"
     max_length: 64
     batch_size: 16
   qwen:
-    enabled: false
+    enabled: true
     backend: "sentence_transformers"
     model_id: "Qwen/Qwen3-VL-Embedding-2B"
     dim: 2048
-    device: "auto"
+    device: "cpu"
     max_length: 64
     batch_size: 16
 
@@ -79,19 +79,38 @@ llm:
   top_p: 0.95
   max_tokens: 4096
   enable_thinking: true
-  max_retries: 4
+  max_retries: 1             # one remote attempt, then use local fallback
+  json_retries: 2            # repair malformed JSON without multiplying HTTP retries
   retry_backoff: 2.0
+  timeout: 30               # fail over to Ollama quickly when NVIDIA stalls
+  fallback:
+    enabled: true
+    provider: "openai-compatible"
+    model: "qwen3-vl:2b-instruct"
+    base_url: "http://127.0.0.1:11434/v1"
+    max_retries: 2
+    retry_backoff: 1.5
+    timeout: 180
 
 vlm:
   provider: "nvidia"          # "nvidia" | "openai-compatible"
-  model: "meta/llama-3.2-90b-vision-instruct"
+  model: "moonshotai/kimi-k3"
   base_url: "https://integrate.api.nvidia.com/v1"
   max_tokens: 256
   temperature: 0.0
-  max_retries: 3
+  max_retries: 1             # one remote attempt, then use local fallback
   retry_backoff: 2.0
   max_workers: 4
   image_max_side: 768         # downscale before base64 to save tokens
+  timeout: 45               # per-frame remote timeout before local fallback
+  fallback:
+    enabled: true
+    provider: "openai-compatible"
+    model: "qwen3-vl:2b-instruct"
+    base_url: "http://127.0.0.1:11434/v1"
+    max_retries: 2
+    retry_backoff: 1.5
+    timeout: 180
 
 fusion:
   method: "weighted_rrf"      # "rrf" | "weighted_rrf" | "weighted_norm"
@@ -106,24 +125,37 @@ fusion:
 
 rerank:
   blip2:
-    enabled: true             # BLIP ITM rerank inside visual path (after Qdrant)
+    enabled: false            # replaced by the unified Qwen3-VL reranker below
     model_id: "Salesforce/blip-itm-base-coco"
     device: "auto"
     top_n: 25
     batch_size: 16
     weight: 1.0
   bge:
-    enabled: true             # BGE cross-encoder rerank for text paths
+    enabled: false            # replaced by the unified Qwen3-VL reranker below
     model_id: "BAAI/bge-reranker-v2-m3"
     device: "auto"
     top_n: 25
     batch_size: 16
     weight: 0.8
+  qwen3_vl:
+    enabled: true
+    model_id: "Qwen/Qwen3-VL-Reranker-2B"
+    device: "cuda"            # reserve GPU for reranking
+    torch_dtype: "float16"    # Quadro RTX 4000 (Turing) has no native BF16
+    top_n: 25                  # rerank fused candidates once, not once per path
+    weight: 1.0
+    max_length: 4096
+    min_pixels: 4096
+    max_pixels: 401408         # ~633x633 cap; safer on the 8 GB RTX 4000
+    instruction: "Retrieve video keyframes relevant to the user's query."
 
 keyframes:
-  root: "./data/keyframes"
-  map_dir: "./data/map-keyframes"
-  metadata_dir: "./data/metadata"
+  # Local SSD is preferred; MinIO below remains the fallback for missing data.
+  # These scene filenames already encode the original frame_id.
+  root: "/home/sysadmin/AIC_2026/Keyframe/batch_1"
+  map_dir: null
+  metadata_dir: null
   image_glob: "*.jpg"
 
 minio:
@@ -150,10 +182,17 @@ submission:
     offsets: [-15, 15, -30, 30]
 
 vqa:
+  mode: "vision"              # Kimi K3 sees images + Description/OCR/ASR
   vlm_top_n: 25               # how many candidates actually reach the VLM
+  vlm_images_per_video: 4     # combine action and evidence shots in one VLM call
   propagate: true             # spread answers to the remaining rows
   answer_max_chars: 100
   fallback_answer: "unknown"
+  # After locating the described action, search other shots in the same videos
+  # for frames that reveal the answer (ingredient close-ups, labels, title cards...).
+  cross_shot_evidence: true
+  evidence_video_top_n: 8
+  evidence_top_n: 24
 
 trake:
   anchor_index: 1             # 0-based -> the second step

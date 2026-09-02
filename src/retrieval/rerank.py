@@ -1,7 +1,7 @@
-"""Rerankers: BLIP-2 ITM (Visual Path) and BGE Cross-Encoder (Fused Candidates).
+"""Multimodal and legacy rerankers.
 
-- BLIP-2 ITM: Rescores visual candidates right after Qdrant using image-text matching.
-- BGE Reranker: Rescores fused candidates right after WRRF using deep cross-encoding.
+Qwen3-VL is the active post-fusion image+text reranker. BLIP-2 and BGE are kept
+for backward-compatible configurations and A/B tests.
 """
 
 from __future__ import annotations
@@ -9,7 +9,12 @@ from __future__ import annotations
 import threading
 from typing import Any, Sequence
 
-from ..config import BGERerankConfig, Blip2RerankConfig, RerankConfig
+from ..config import (
+    BGERerankConfig,
+    Blip2RerankConfig,
+    Qwen3VLRerankConfig,
+    RerankConfig,
+)
 from ..logging_utils import get_logger
 from ..schemas import Candidate
 from ..utils.keyframe_index import KeyframeIndex
@@ -323,6 +328,312 @@ class BGEReranker:
                     probs = [probs]
                 all_scores.extend(probs)
         return all_scores
+
+
+# ---------------------------------------------------------------------------
+# Qwen3-VL unified multimodal reranker (post-fusion)
+# ---------------------------------------------------------------------------
+class Qwen3VLReranker:
+    """Rerank fused keyframes with Qwen3-VL using image and text together.
+
+    The implementation follows Qwen's official yes/no likelihood scoring:
+    every query-document pair is formatted as a multimodal chat and the final
+    hidden state is projected with ``lm_head[yes] - lm_head[no]``.
+    """
+
+    def __init__(
+        self,
+        cfg: Qwen3VLRerankConfig,
+        kf: KeyframeIndex | None = None,
+    ) -> None:
+        self.cfg = cfg
+        self.kf = kf
+        self._model: Any = None
+        self._processor: Any = None
+        self._score_linear: Any = None
+        self._torch: Any = None
+        self._process_vision_info: Any = None
+        self._failed = False
+        self._load_lock = threading.Lock()
+        # TRAKE retrieves steps concurrently; one shared 2B model must not run
+        # overlapping forward passes and unexpectedly exhaust VRAM.
+        self._inference_lock = threading.Lock()
+
+    @property
+    def enabled(self) -> bool:
+        return self.cfg.enabled and not self._failed
+
+    def _load(self) -> None:
+        if self._model is not None or self._failed:
+            return
+        with self._load_lock:
+            if self._model is not None or self._failed:
+                return
+            try:
+                import torch
+                from qwen_vl_utils import process_vision_info
+                from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
+
+                if str(self.cfg.device).startswith("cuda") and not torch.cuda.is_available():
+                    raise RuntimeError(
+                        "rerank.qwen3_vl.device is CUDA but torch.cuda.is_available() is false"
+                    )
+                dtype = getattr(torch, self.cfg.torch_dtype, None)
+                if dtype is None:
+                    raise ValueError(f"Unsupported torch dtype: {self.cfg.torch_dtype}")
+
+                lm = Qwen3VLForConditionalGeneration.from_pretrained(
+                    self.cfg.model_id,
+                    trust_remote_code=True,
+                    torch_dtype=dtype,
+                ).to(self.cfg.device)
+                processor = AutoProcessor.from_pretrained(
+                    self.cfg.model_id,
+                    trust_remote_code=True,
+                    padding_side="left",
+                )
+                token_yes = processor.tokenizer.get_vocab()["yes"]
+                token_no = processor.tokenizer.get_vocab()["no"]
+                weight = lm.lm_head.weight.data[token_yes] - lm.lm_head.weight.data[token_no]
+                score_linear = torch.nn.Linear(weight.shape[0], 1, bias=False)
+                with torch.no_grad():
+                    score_linear.weight[0].copy_(weight)
+
+                self._model = lm.model.eval()
+                self._processor = processor
+                self._score_linear = score_linear.to(self.cfg.device).to(self._model.dtype).eval()
+                self._torch = torch
+                self._process_vision_info = process_vision_info
+                log.info(
+                    "Qwen3-VL reranker %s loaded on %s (%s)",
+                    self.cfg.model_id,
+                    self.cfg.device,
+                    self.cfg.torch_dtype,
+                    extra={"progress": {
+                        "phase": "rerank",
+                        "status": "running",
+                        "title": "Qwen3-VL reranker đã sẵn sàng",
+                        "detail": (
+                            f"{self.cfg.model_id} trên {self.cfg.device} "
+                            f"({self.cfg.torch_dtype})"
+                        ),
+                    }},
+                )
+            except Exception as exc:  # noqa: BLE001 - retrieval must degrade gracefully
+                self._failed = True
+                log.warning(
+                    "Qwen3-VL reranker unavailable (%s) - continuing without reranking",
+                    exc,
+                    extra={"progress": {
+                        "phase": "rerank",
+                        "status": "warning",
+                        "title": "Reranker không khả dụng",
+                        "detail": str(exc)[:240],
+                    }},
+                )
+
+    def rerank(
+        self,
+        query: str,
+        candidates: Sequence[Candidate],
+        *,
+        top_n: int | None = None,
+        weight: float | None = None,
+    ) -> list[Candidate]:
+        ordered = list(candidates)
+        if not self.enabled or not query or not ordered or self.kf is None:
+            return ordered
+        self._load()
+        if self._model is None:
+            return ordered
+
+        effective_top_n = max(1, int(top_n or self.cfg.top_n))
+        effective_weight = max(
+            0.0, float(self.cfg.weight if weight is None else weight)
+        )
+        head, tail = ordered[:effective_top_n], ordered[effective_top_n:]
+        items = [(candidate.video_id, candidate.frame_id) for candidate in head]
+        image_map = self.kf.batch_get_images(
+            items, max_workers=min(10, max(1, len(items)))
+        )
+
+        scored: list[tuple[float, Candidate]] = []
+        with self._inference_lock:
+            for candidate in head:
+                image = image_map.get(candidate.key)
+                text = self._extract_candidate_text(candidate)
+                if image is None and not text:
+                    scored.append((candidate.score, candidate))
+                    continue
+                try:
+                    relevance = self._score_pair(query, text=text, image=image)
+                except Exception as exc:  # noqa: BLE001 - keep this candidate's recall score
+                    log.warning("Qwen3-VL rerank failed on %s: %s", candidate.key, exc)
+                    scored.append((candidate.score, candidate))
+                    continue
+                blended = candidate.score + effective_weight * relevance
+                scored.append((
+                    blended,
+                    candidate.replace(
+                        score=blended,
+                        extra={
+                            **(candidate.extra or {}),
+                            "qwen3_vl_rerank_score": relevance,
+                            "pre_qwen3_vl_score": candidate.score,
+                        },
+                    ),
+                ))
+
+        scored.sort(key=lambda pair: (-pair[0], pair[1].video_id, pair[1].frame_id))
+        merged = [candidate for _, candidate in scored] + tail
+        return [candidate.replace(rank=i) for i, candidate in enumerate(merged, start=1)]
+
+    @staticmethod
+    def _extract_candidate_text(candidate: Candidate) -> str:
+        extra = candidate.extra or {}
+        parts: list[str] = []
+        for key, label in (
+            ("description_matched", "Description"),
+            ("ocr_matched", "OCR"),
+            ("asr_matched", "ASR"),
+        ):
+            value = str(extra.get(key) or "").strip()
+            if value:
+                parts.append(f"{label}: {value}")
+        if not parts:
+            matched = str(extra.get("matched_text") or "").strip()
+            if matched:
+                parts.append(matched)
+        return " | ".join(parts)
+
+    def _score_pair(self, query: str, *, text: str, image: Any) -> float:
+        content: list[dict[str, Any]] = [
+            {"type": "text", "text": f"<Instruct>: {self.cfg.instruction}"},
+            {"type": "text", "text": f"<Query>: {query}"},
+            {"type": "text", "text": "\n<Document>:"},
+        ]
+        if image is not None:
+            content.append({
+                "type": "image",
+                "image": image,
+                "min_pixels": self.cfg.min_pixels,
+                "max_pixels": self.cfg.max_pixels,
+            })
+        if text:
+            content.append({"type": "text", "text": text})
+        messages = [
+            {
+                "role": "system",
+                "content": [{
+                    "type": "text",
+                    "text": (
+                        "Judge whether the Document meets the requirements based "
+                        "on the Query and the Instruct provided. The answer can "
+                        "only be yes or no."
+                    ),
+                }],
+            },
+            {"role": "user", "content": content},
+        ]
+        inputs = self._tokenize(messages).to(self.cfg.device)
+        with self._torch.inference_mode():
+            hidden = self._model(**inputs).last_hidden_state[:, -1]
+            score = self._torch.sigmoid(self._score_linear(hidden)).squeeze(-1)
+        return float(score[0].detach().cpu().item())
+
+    def _tokenize(self, messages: list[dict[str, Any]]) -> Any:
+        pairs = [messages]
+        rendered = self._processor.apply_chat_template(
+            pairs, tokenize=False, add_generation_prompt=True
+        )
+        images, videos, video_kwargs = self._process_vision_info(
+            pairs,
+            image_patch_size=16,
+            return_video_kwargs=True,
+            return_video_metadata=True,
+        )
+        if videos is not None:
+            videos, video_metadata = zip(*videos)
+            videos, video_metadata = list(videos), list(video_metadata)
+        else:
+            video_metadata = None
+        inputs = self._processor(
+            text=rendered,
+            images=images,
+            videos=videos,
+            video_metadata=video_metadata,
+            truncation=False,
+            padding=False,
+            do_resize=False,
+            **video_kwargs,
+        )
+        special_ids = set(self._processor.tokenizer.all_special_ids)
+        input_rows = [
+            row.tolist() if hasattr(row, "tolist") else list(row)
+            for row in inputs["input_ids"]
+        ]
+        mm_rows_raw = inputs.get("mm_token_type_ids")
+        mm_rows = None
+        if mm_rows_raw is not None:
+            mm_rows = [
+                row.tolist() if hasattr(row, "tolist") else list(row)
+                for row in mm_rows_raw
+            ]
+
+        # Transformers 5.x returns mm_token_type_ids as nested Python lists,
+        # while Qwen3VLModel requires a torch.IntTensor. Keep it aligned with
+        # input_ids through the same special-token-preserving truncation.
+        truncated_ids: list[list[int]] = []
+        truncated_mm: list[list[int]] | None = [] if mm_rows is not None else None
+        for index, raw_ids in enumerate(input_rows):
+            token_ids = [int(token) for token in raw_ids]
+            token_types = (
+                [int(value) for value in mm_rows[index]] if mm_rows is not None else None
+            )
+            if len(token_ids) <= self.cfg.max_length:
+                truncated_ids.append(token_ids)
+                if truncated_mm is not None and token_types is not None:
+                    truncated_mm.append(token_types)
+                continue
+
+            suffix = token_ids[-5:]
+            suffix_types = token_types[-5:] if token_types is not None else None
+            body = token_ids[:-5]
+            body_types = token_types[:-5] if token_types is not None else None
+            special_count = sum(token in special_ids for token in body)
+            budget = max(0, self.cfg.max_length - len(suffix) - special_count)
+            kept: list[int] = []
+            kept_types: list[int] = []
+            normal_count = 0
+            for position, token in enumerate(body):
+                if token in special_ids or normal_count < budget:
+                    kept.append(token)
+                    if body_types is not None:
+                        kept_types.append(body_types[position])
+                    if token not in special_ids:
+                        normal_count += 1
+            truncated_ids.append(kept + suffix)
+            if truncated_mm is not None:
+                truncated_mm.append(kept_types + (suffix_types or []))
+
+        padded = self._processor.tokenizer.pad(
+            {"input_ids": truncated_ids},
+            padding=True,
+            return_tensors="pt",
+        )
+        for key, value in padded.items():
+            inputs[key] = value
+        if truncated_mm is not None:
+            width = int(inputs["input_ids"].shape[1])
+            padding_side = getattr(self._processor.tokenizer, "padding_side", "right")
+            padded_mm: list[list[int]] = []
+            for row in truncated_mm:
+                padding = [0] * (width - len(row))
+                padded_mm.append(padding + row if padding_side == "left" else row + padding)
+            inputs["mm_token_type_ids"] = self._torch.tensor(
+                padded_mm, dtype=self._torch.long
+            )
+        return inputs
 
 
 # Backward compatibility alias

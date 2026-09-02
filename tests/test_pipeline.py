@@ -219,6 +219,42 @@ def test_static_weights_are_used_when_adaptive_is_off(cfg):
     assert weights[PATH_OCR] == pytest.approx(0.25)
 
 
+def test_request_overrides_disable_paths_and_use_ui_weights(cfg):
+    text = FakeTextSearcher(
+        ocr=[make_candidate("L01_V001", 10, 5.0, PATH_OCR, 1)],
+        asr=[make_candidate("L01_V002", 20, 4.0, PATH_ASR, 1)],
+    )
+    visual = FakeVisualSearcher([
+        make_candidate("L01_V003", 30, 0.9, PATH_VISUAL, 1)
+    ])
+    pipeline = build_pipeline(cfg, FakeLLM(DECOMPOSITION), text, visual)
+
+    candidates, result = pipeline.run(
+        "q",
+        topk=10,
+        write_trace=False,
+        enabled_paths=[PATH_OCR, PATH_VISUAL],
+        fusion_adaptive=False,
+        fusion_weights={PATH_OCR: 1.0, PATH_VISUAL: 3.0},
+        fusion_method="weighted_rrf",
+        rrf_k=40,
+        qwen_enabled=False,
+    )
+
+    assert text.seen == ["ocr"]
+    assert visual.seen == ["a person in a red shirt"]
+    assert {candidate.key for candidate in candidates} == {
+        ("L01_V001", 10), ("L01_V003", 30)
+    }
+    weights = pipeline.resolve_weights(
+        result,
+        enabled_paths=[PATH_OCR, PATH_VISUAL],
+        override_weights={PATH_OCR: 1.0, PATH_VISUAL: 3.0},
+        adaptive=False,
+    )
+    assert weights == {PATH_OCR: pytest.approx(0.25), PATH_VISUAL: pytest.approx(0.75)}
+
+
 def test_the_trace_file_records_the_weights_actually_used(cfg, tmp_path):
     cfg.runs.dir = tmp_path
     text = FakeTextSearcher(ocr=[make_candidate("L01_V001", 10, 5.0)])
@@ -310,3 +346,25 @@ def test_bge_reranker_per_text_path(cfg):
     assert "VinFast" in bge.queries
     assert any(c.extra.get("bge_called") for c in candidates)
 
+
+def test_qwen3_vl_reranker_runs_once_after_fusion(cfg):
+    text = FakeTextSearcher(
+        ocr=[make_candidate("L01_V001", 10, 5.0, PATH_OCR, 1)],
+        asr=[make_candidate("L01_V002", 20, 4.0, PATH_ASR, 1)],
+    )
+    visual = FakeVisualSearcher([
+        make_candidate("L01_V003", 30, 0.9, PATH_VISUAL, 1)
+    ])
+    qwen = FakeReranker(enabled=True, tag="qwen3_vl_called")
+    pipeline = RetrievalPipeline(
+        cfg=cfg,
+        llm=FakeLLM(DECOMPOSITION),
+        text_searcher=text,
+        visual_searcher=visual,
+        qwen3_vl_reranker=qwen,
+    )
+
+    candidates, _ = pipeline.run("q", topk=10, write_trace=False)
+
+    assert qwen.queries == ["q"]
+    assert all(candidate.extra.get("qwen3_vl_called") for candidate in candidates)

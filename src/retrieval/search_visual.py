@@ -98,7 +98,12 @@ class VisualSearcher:
         return report
 
     # ------------------------------------------------------------------
-    def search(self, image_query: str | None, limit: int | None = None) -> list[Candidate]:
+    def search(
+        self,
+        image_query: str | None,
+        limit: int | None = None,
+        video_ids: list[str] | None = None,
+    ) -> list[Candidate]:
         """Retrieve keyframes for a visual sub-query."""
         if not image_query or not image_query.strip():
             log.debug("visual path disabled (no image sub-query)")
@@ -109,18 +114,40 @@ class VisualSearcher:
         if not encoders:
             return []
 
-        try:
-            vectors = {
-                name: encoder.encode_one(image_query)
-                for name, encoder in encoders.items()
-            }
-        except Exception as exc:  # noqa: BLE001
-            log.error("Query embedding failed: %s", exc)
+        vectors: dict[str, np.ndarray] = {}
+        failed_vectors: list[str] = []
+        vector_to_encoder = {
+            vector_name: encoder_name
+            for encoder_name, vector_name in self.cfg.qdrant.vector_names.items()
+        }
+        for vector_name, encoder in list(encoders.items()):
+            try:
+                vectors[vector_name] = encoder.encode_one(image_query)
+            except Exception as exc:  # noqa: BLE001
+                encoder_name = vector_to_encoder.get(vector_name, vector_name)
+                self._degraded.add(encoder_name)
+                failed_vectors.append(vector_name)
+                log.warning(
+                    "%s query encoder failed (%s) - continuing visual search "
+                    "with the remaining vectors",
+                    encoder_name,
+                    exc,
+                )
+
+        # Do not retry a model that loaded but proved unusable on every query.
+        for vector_name in failed_vectors:
+            encoders.pop(vector_name, None)
+
+        if not vectors:
+            log.error("All visual query encoders failed - visual search skipped")
             return []
 
         try:
             raw = self.qdrant.hybrid_search(
-                vectors, limit=limit, prefetch_limit=self.cfg.qdrant.prefetch_limit
+                vectors,
+                limit=limit,
+                prefetch_limit=self.cfg.qdrant.prefetch_limit,
+                video_ids=video_ids,
             )
         except Exception as exc:  # noqa: BLE001 - a dead path must not kill the run
             log.error("Qdrant search failed: %s", exc)

@@ -38,6 +38,9 @@ class WebLogBuffer(logging.Handler):
                 "logger": record.name,
                 "message": record.getMessage(),
             }
+            progress = getattr(record, "progress", None)
+            if isinstance(progress, dict):
+                entry["progress"] = progress
             with self._buf_lock:
                 self.records.append(entry)
                 for q, loop in list(self.subscribers):

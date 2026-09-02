@@ -123,7 +123,7 @@ class Services:
     @property
     def pipeline(self) -> Any:
         from .retrieval.pipeline import RetrievalPipeline
-        from .retrieval.rerank import BGEReranker, BLIP2Reranker
+        from .retrieval.rerank import BGEReranker, BLIP2Reranker, Qwen3VLReranker
         from .retrieval.search_text import TextSearcher
         from .retrieval.search_visual import VisualSearcher
 
@@ -135,6 +135,9 @@ class Services:
                 visual_searcher=VisualSearcher(self.cfg, self.qdrant, self.cache),
                 blip2_reranker=BLIP2Reranker(self.cfg.rerank.blip2, self.keyframes),
                 bge_reranker=BGEReranker(self.cfg.rerank.bge),
+                qwen3_vl_reranker=Qwen3VLReranker(
+                    self.cfg.rerank.qwen3_vl, self.keyframes
+                ),
             )
         return self._pipeline
 
@@ -369,7 +372,7 @@ def cmd_qa(args: argparse.Namespace, services: Services) -> int:
     query_path = Path(args.query_file)
     query = read_query(query_path)
     rows = run_vqa(
-        query, services.pipeline, services.keyframes, services.cfg,
+        query, services.pipeline, services.vlm, services.keyframes, services.cfg,
         trace_name=query_path.stem, use_cache=services.cfg.cache.enabled,
     )
     out = default_out(services.cfg, query_path, args.out)
@@ -456,8 +459,10 @@ def cmd_batch(args: argparse.Namespace, services: Services) -> int:
                                trace_name=query_path.stem, use_cache=cfg.cache.enabled)
                 written = 0 if args.dry_run else write_kis(out, rows, cfg.submission.max_rows)
             elif task == "qa":
-                rows = run_vqa(query, services.pipeline, services.keyframes,
-                               cfg, trace_name=query_path.stem, use_cache=cfg.cache.enabled)
+                rows = run_vqa(
+                    query, services.pipeline, services.vlm, services.keyframes,
+                    cfg, trace_name=query_path.stem, use_cache=cfg.cache.enabled,
+                )
                 written = 0 if args.dry_run else write_qa(
                     out, rows, cfg.submission.max_rows,
                     cfg.vqa.answer_max_chars, cfg.vqa.fallback_answer,

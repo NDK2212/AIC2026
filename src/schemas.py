@@ -189,6 +189,7 @@ class VQASplit:
     question: str
     question_en: str = ""
     expected_answer_type: str = "other"
+    evidence_query: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -196,6 +197,7 @@ class VQASplit:
             "question": self.question,
             "question_en": self.question_en,
             "expected_answer_type": self.expected_answer_type,
+            "evidence_query": self.evidence_query,
         }
 
 

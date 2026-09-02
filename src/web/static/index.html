@@ -3,10 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>AIC 2026 - Interactive Video Retrieval Engine</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <title>AIC 2026 | Video Retrieval Workbench</title>
   <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body class="dark-theme">
@@ -18,27 +15,27 @@
     <header class="header glass-panel">
       <div class="header-left">
         <div class="logo-badge">
-          <span class="logo-icon">⚡</span>
+          <span class="logo-icon">A26</span>
           <div class="logo-text">
             <span class="brand-title">AIC 2026</span>
-            <span class="brand-subtitle">RETRIEVAL PLATFORM</span>
+            <span class="brand-subtitle">VIDEO RETRIEVAL WORKBENCH</span>
           </div>
         </div>
 
         <!-- TASK SELECTOR TABS -->
         <nav class="task-tabs" id="taskSelector">
           <button class="task-tab active" data-task="kis" id="tabKis">
-            <span class="tab-icon">🎯</span>
+            <span class="tab-icon">01</span>
             <span class="tab-label">KIS</span>
             <span class="tab-desc">Known-Item</span>
           </button>
           <button class="task-tab" data-task="vqa" id="tabVqa">
-            <span class="tab-icon">💬</span>
+            <span class="tab-icon">02</span>
             <span class="tab-label">VQA</span>
             <span class="tab-desc">Question & Answer</span>
           </button>
           <button class="task-tab" data-task="trake" id="tabTrake">
-            <span class="tab-icon">⏱️</span>
+            <span class="tab-icon">03</span>
             <span class="tab-label">TRAKE</span>
             <span class="tab-desc">Action Sequence</span>
           </button>
@@ -68,8 +65,8 @@
 
         <!-- SETTINGS BUTTON -->
         <button class="btn btn-icon btn-glass" id="btnToggleSettings" title="Tùy chỉnh Thông số & API Keys">
-          <span class="btn-icon-symbol">⚙️</span>
-          <span>Cấu hình & Keys</span>
+          <span class="btn-icon-symbol">CFG</span>
+          <span>Cấu hình</span>
         </button>
       </div>
     </header>
@@ -77,16 +74,16 @@
     <!-- PARAMETERS & SETTINGS DRAWER -->
     <aside class="settings-drawer glass-panel" id="settingsDrawer">
       <div class="drawer-header">
-        <h3>🎛️ Bảng Điều Khiển Toàn Quyền (Master Control Panel)</h3>
-        <button class="btn-close" id="btnCloseSettings">✕</button>
+        <div><span class="eyebrow">RUNTIME SETTINGS</span><h3>Điều khiển pipeline</h3></div>
+        <button class="btn-close" id="btnCloseSettings" aria-label="Đóng cấu hình">×</button>
       </div>
 
       <div class="drawer-tabs">
-        <button class="d-tab active" data-dtab="keys">🔑 NVIDIA API Pool</button>
-        <button class="d-tab" data-dtab="paths">🧭 4 Nhánh Retrieval</button>
-        <button class="d-tab" data-dtab="rerank">🔄 Reranker BLIP/BGE</button>
-        <button class="d-tab" data-dtab="task-cfg">🎯 Tùy chỉnh Task</button>
-        <button class="d-tab" data-dtab="diversity">🎞️ Phân cảnh & Mở rộng</button>
+        <button class="d-tab active" data-dtab="keys">API Pool</button>
+        <button class="d-tab" data-dtab="paths">Retrieval</button>
+        <button class="d-tab" data-dtab="rerank">Qwen Reranker</button>
+        <button class="d-tab" data-dtab="task-cfg">Task</button>
+        <button class="d-tab" data-dtab="diversity">Diversity</button>
       </div>
 
       <div class="drawer-content">
@@ -98,7 +95,7 @@
             <p class="cfg-desc">Nhập 1 hoặc nhiều API keys (mỗi key trên 1 dòng hoặc cách nhau bởi dấu phẩy). Khi có lỗi 429/503, hệ thống sẽ tự động chuyển sang key khác ngay lập tức.</p>
             <textarea id="inputApiKeys" class="input-textarea" rows="4" placeholder="nvapi-xxxx1&#10;nvapi-xxxx2&#10;nvapi-xxxx3"></textarea>
             <div class="btn-row">
-              <button class="btn btn-primary btn-sm" id="btnSaveKeys">💾 Lưu & Kích hoạt Keys</button>
+              <button class="btn btn-primary btn-sm" id="btnSaveKeys">Lưu và kích hoạt</button>
               <span class="save-status-msg" id="keySaveStatus"></span>
             </div>
             <div class="key-chips-list" id="activeKeyChips"></div>
@@ -201,42 +198,21 @@
             <div class="cfg-card">
               <div class="cfg-toggle-row">
                 <label class="toggle-switch">
-                  <input type="checkbox" id="chkBlipRerank" checked>
+                  <input type="checkbox" id="chkQwenRerank" checked>
                   <span class="slider round"></span>
                 </label>
-                <span class="cfg-title">BLIP-1 Visual ITM Reranker</span>
+                <span class="cfg-title">Qwen3-VL Multimodal Reranker 2B</span>
               </div>
-              <p class="cfg-desc">Đối sánh ngữ nghĩa Image-Text Matching trực tiếp trên ảnh keyframe sau Qdrant.</p>
+              <p class="cfg-desc">Tái xếp hạng candidate đã fusion bằng ảnh keyframe cùng Description, OCR và ASR trên GPU.</p>
               <div class="slider-row">
-                <label>Top-N ảnh rerank:</label>
-                <input type="range" id="rngBlipTopN" min="5" max="50" step="5" value="25">
-                <span class="val-badge" id="valBlipTopN">25</span>
-              </div>
-              <div class="slider-row">
-                <label>Trọng số $W_{blip}$:</label>
-                <input type="range" id="rngBlipWeight" min="0" max="2.0" step="0.1" value="1.0">
-                <span class="val-badge" id="valBlipWeight">1.0</span>
-              </div>
-            </div>
-
-            <div class="cfg-card">
-              <div class="cfg-toggle-row">
-                <label class="toggle-switch">
-                  <input type="checkbox" id="chkBgeRerank" checked>
-                  <span class="slider round"></span>
-                </label>
-                <span class="cfg-title">BGE Cross-Encoder Text Reranker</span>
-              </div>
-              <p class="cfg-desc">Tái xếp hạng sâu candidate văn bản (Description + OCR + ASR).</p>
-              <div class="slider-row">
-                <label>Top-N text rerank:</label>
-                <input type="range" id="rngBgeTopN" min="5" max="50" step="5" value="25">
-                <span class="val-badge" id="valBgeTopN">25</span>
+                <label>Top-N fused rerank:</label>
+                <input type="range" id="rngQwenTopN" min="5" max="50" step="5" value="25">
+                <span class="val-badge" id="valQwenTopN">25</span>
               </div>
               <div class="slider-row">
-                <label>Trọng số $W_{bge}$:</label>
-                <input type="range" id="rngBgeWeight" min="0" max="2.0" step="0.1" value="0.8">
-                <span class="val-badge" id="valBgeWeight">0.8</span>
+                <label>Trọng số $W_{qwen}$:</label>
+                <input type="range" id="rngQwenWeight" min="0" max="2.0" step="0.1" value="1.0">
+                <span class="val-badge" id="valQwenWeight">1.0</span>
               </div>
             </div>
           </div>
@@ -245,20 +221,20 @@
         <!-- TAB 4: TASK SPECIFIC CONFIG (VQA & TRAKE) -->
         <div class="d-tab-pane" id="pane-task-cfg">
           <div class="cfg-section">
-            <h4>💬 Tùy chỉnh Chế độ VQA (Video Question Answering)</h4>
+            <h4>VQA: cách tạo đáp án</h4>
             <div class="vqa-mode-selector">
               <label class="radio-card active" id="lblVqaTextMode">
                 <input type="radio" name="vqaModeRadio" value="text_only" checked>
                 <div class="radio-body">
-                  <span class="radio-title">⚡ Không Dùng Ảnh (Text & Metadata Only)</span>
+                  <span class="radio-title">Text và metadata</span>
                   <span class="radio-desc">Suy luận siêu tốc (&lt;2s) qua Nemotron-3-Ultra dựa trên Dense Caption, chữ OCR và lời thoại ASR từ Elasticsearch.</span>
                 </div>
               </label>
               <label class="radio-card" id="lblVqaVisionMode">
                 <input type="radio" name="vqaModeRadio" value="vision">
                 <div class="radio-body">
-                  <span class="radio-title">👁️ Dùng Ảnh (VLM Multimodal: Vision + Metadata)</span>
-                  <span class="radio-desc">Stream ảnh keyframe và gửi cho mô hình thị giác Llama-3.2-90B-Vision để trả lời chi tiết màu sắc, đếm người, vật thể.</span>
+                  <span class="radio-title">Kimi K3 Vision</span>
+                  <span class="radio-desc">Gửi action frame và evidence frame cùng video cho VLM để nhận dạng vật thể, màu sắc và số lượng.</span>
                 </div>
               </label>
             </div>
@@ -277,7 +253,7 @@
           </div>
 
           <div class="cfg-section mt-3">
-            <h4>⏱️ Tùy chỉnh Task TRAKE (Temporal Action DP)</h4>
+            <h4>TRAKE: temporal alignment</h4>
             <div class="cfg-grid-3">
               <div class="form-group">
                 <label>Top-K mỗi step:</label>
@@ -323,8 +299,8 @@
       </div>
 
       <div class="drawer-footer">
-        <button class="btn btn-outline btn-sm" id="btnResetDefaults">🔄 Khôi phục Mặc định (Reset)</button>
-        <button class="btn btn-primary btn-sm" id="btnApplySettings">✅ Áp dụng Cấu hình</button>
+        <button class="btn btn-outline btn-sm" id="btnResetDefaults">Khôi phục mặc định</button>
+        <button class="btn btn-primary btn-sm" id="btnApplySettings">Áp dụng cấu hình</button>
       </div>
     </aside>
 
@@ -334,7 +310,7 @@
       <!-- QUERY INPUT SECTION -->
       <section class="query-section glass-panel">
         <div class="query-header">
-          <span class="query-prompt-label">CÂU TRUY VẤN / CÂU HỎI (<span id="currentTaskBadge">KIS</span>):</span>
+          <span class="query-prompt-label"><span id="currentTaskBadge">KIS</span> / QUERY</span>
           <div class="query-presets" id="presetQueries">
             <!-- Dynamic preset chips will be rendered here -->
           </div>
@@ -348,8 +324,7 @@
               <span>Cache</span>
             </label>
             <button class="btn btn-search" id="btnSearch">
-              <span class="search-icon">🔍</span>
-              <span class="search-text">TÌM KIẾM</span>
+              <span class="search-text">Chạy pipeline</span>
             </button>
           </div>
         </div>
@@ -360,7 +335,7 @@
         <div class="monitor-header">
           <div class="monitor-title">
             <span class="pulse-indicator"></span>
-            <span>TIẾN TRÌNH THỰC THI PIPELINE THỜI GIAN THỰC</span>
+            <span>PIPELINE TRACE</span>
           </div>
           <div class="monitor-elapsed" id="monitorElapsed">Thời gian: 0.0s</div>
         </div>
@@ -384,7 +359,7 @@
             <div class="step-num">3</div>
             <div class="step-content">
               <div class="step-name">Reranking & Fusion</div>
-              <div class="step-detail" id="stepDetailRerank">BLIP-1 / BGE & Weighted RRF Fusion...</div>
+              <div class="step-detail" id="stepDetailRerank">Qwen3-VL 2B và Weighted RRF...</div>
             </div>
           </div>
           <div class="p-step" id="step-post">
@@ -411,12 +386,11 @@
       <section class="results-toolbar glass-panel" id="resultsToolbar" style="display: none;">
         <div class="toolbar-left">
           <span class="results-count-badge" id="resultsCount">0 Kết quả</span>
-          <span class="pinned-notice" id="pinnedNotice" style="display: none;">⭐ Đã đẩy 1 frame lên Top 1</span>
+          <span class="pinned-notice" id="pinnedNotice" style="display: none;">Đã ghim frame vào Top 1</span>
         </div>
         <div class="toolbar-right">
           <button class="btn btn-success btn-export" id="btnExportCsv">
-            <span class="export-icon">📥</span>
-            <span>XUẤT FILE CSV NỘP BÀI AIC 2026</span>
+            <span>Xuất CSV</span>
           </button>
         </div>
       </section>
@@ -424,7 +398,7 @@
       <!-- RESULTS GALLERY (KIS / VQA / TRAKE) -->
       <section class="results-gallery" id="resultsGallery">
         <div class="empty-state" id="emptyState">
-          <div class="empty-icon">🎬</div>
+          <div class="empty-icon">READY</div>
           <div class="empty-title">Sẵn sàng tìm kiếm</div>
           <div class="empty-desc">Chọn tác vụ (KIS, VQA, TRAKE), nhập câu hỏi hoặc chọn mẫu câu hỏi bên trên và nhấn <strong>TÌM KIẾM</strong>.</div>
         </div>
@@ -437,15 +411,15 @@
       <div class="modal-container glass-panel">
         <div class="modal-header">
           <div class="modal-title-box">
-            <span class="modal-badge">🎞️ FILMSTRIP</span>
+            <span class="modal-badge">FILMSTRIP</span>
             <h3 id="modalVideoTitle">Cửa sổ 25 Frame lân cận: L26_V479</h3>
           </div>
-          <button class="btn-close" id="btnCloseNeighborModal">✕</button>
+          <button class="btn-close" id="btnCloseNeighborModal" aria-label="Đóng filmstrip">×</button>
         </div>
 
         <div class="modal-body">
           <div class="filmstrip-controls">
-            <span class="filmstrip-hint">💡 Sử dụng chuột cuộn ngang hoặc phím mũi tên [←] [→] để duyệt các frame liên tiếp của video này.</span>
+            <span class="filmstrip-hint">Cuộn ngang hoặc dùng phím mũi tên để duyệt các frame liên tiếp.</span>
           </div>
 
           <div class="filmstrip-carousel" id="neighborFilmstrip">
@@ -460,14 +434,14 @@
 
         <div class="modal-footer">
           <button class="btn btn-outline" id="btnCloseNeighborModalFooter">Đóng</button>
-          <button class="btn btn-primary" id="btnConfirmSelectNeighbor">🎯 Chọn Frame Này Thay Thế</button>
+          <button class="btn btn-primary" id="btnConfirmSelectNeighbor">Dùng frame đang chọn</button>
         </div>
       </div>
     </div>
 
     <!-- FLOATING LIVE CONSOLE LOGS TOGGLE -->
     <button id="btnToggleTerminal" class="btn-terminal-toggle" title="Mở / Đóng Console Logs Realtime">
-      <span class="term-toggle-icon">📟</span>
+      <span class="term-toggle-icon">LOG</span>
       <span class="term-toggle-text">Console Logs</span>
       <span class="term-live-pulse" id="termLiveDot"></span>
     </button>
@@ -476,7 +450,7 @@
     <div id="liveTerminalDrawer" class="terminal-drawer">
       <div class="terminal-header">
         <div class="terminal-title">
-          <span class="term-icon">📟</span>
+          <span class="term-icon">LOG</span>
           <span style="font-weight:700;color:var(--text-main);">REAL-TIME BACKEND CONSOLE</span>
           <span id="termStatusBadge" class="term-status-badge">● Live Connected</span>
         </div>
@@ -490,8 +464,8 @@
           <label class="term-toggle-label">
             <input type="checkbox" id="chkTermAutoScroll" checked> Tự cuộn
           </label>
-          <button id="btnTermClear" class="btn-term-action" title="Xóa màn hình">🧹 Xóa</button>
-          <button id="btnCloseTerminal" class="btn-term-action" title="Đóng console">✕</button>
+          <button id="btnTermClear" class="btn-term-action" title="Xóa màn hình">Xóa</button>
+          <button id="btnCloseTerminal" class="btn-term-action" title="Đóng console">Đóng</button>
         </div>
       </div>
       <div id="terminalBody" class="terminal-body">

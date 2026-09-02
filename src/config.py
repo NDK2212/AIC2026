@@ -204,6 +204,49 @@ class EmbeddingConfig:
 
 
 @dataclass
+class ModelFallbackConfig:
+    """Secondary OpenAI-compatible endpoint used when the primary model fails."""
+
+    enabled: bool = False
+    provider: str = "openai-compatible"
+    model: str = ""
+    base_url: str | None = None
+    api_key_env: str | None = None
+    max_retries: int = 2
+    retry_backoff: float = 1.5
+    timeout: int = 120
+
+    @classmethod
+    def parse(cls, node: Any, where: str) -> "ModelFallbackConfig":
+        if node is None:
+            return cls()
+        if not isinstance(node, dict):
+            raise ConfigError(f"Config section '{where}' must be a mapping")
+        provider = str(node.get("provider", "openai-compatible")).lower()
+        if provider not in {"nvidia", "openai-compatible"}:
+            raise ConfigError(
+                f"{where}.provider must be nvidia|openai-compatible, got {provider!r}"
+            )
+        enabled = bool(node.get("enabled", True))
+        model = str(node.get("model", "")).strip()
+        base_url = node.get("base_url")
+        if enabled and not model:
+            raise ConfigError(f"Missing required config key '{where}.model'")
+        if enabled and provider == "openai-compatible" and not base_url:
+            raise ConfigError(f"Missing required config key '{where}.base_url'")
+        return cls(
+            enabled=enabled,
+            provider=provider,
+            model=model,
+            base_url=str(base_url) if base_url else None,
+            api_key_env=str(node["api_key_env"]) if node.get("api_key_env") else None,
+            max_retries=max(1, int(node.get("max_retries", 2))),
+            retry_backoff=float(node.get("retry_backoff", 1.5)),
+            timeout=max(1, int(node.get("timeout", 120))),
+        )
+
+
+@dataclass
 class LLMConfig:
     provider: str = "nvidia"
     model: str = "nvidia/nemotron-3-ultra-550b-a55b"
@@ -213,21 +256,33 @@ class LLMConfig:
     max_tokens: int = 4096
     enable_thinking: bool = True
     max_retries: int = 4
+    json_retries: int = 2
     retry_backoff: float = 2.0
     api_key_env: str = "NVIDIA_API_KEY"
+    timeout: int = 60
+    fallback: ModelFallbackConfig = field(default_factory=ModelFallbackConfig)
 
     @classmethod
     def parse(cls, node: dict[str, Any]) -> "LLMConfig":
+        provider = str(node.get("provider", "nvidia")).lower()
+        if provider not in {"nvidia", "openai-compatible"}:
+            raise ConfigError(
+                f"llm.provider must be nvidia|openai-compatible, got {provider!r}"
+            )
         return cls(
-            provider=str(node.get("provider", "nvidia")),
+            provider=provider,
             model=str(_require(node, "model", "llm")),
             base_url=node.get("base_url"),
             temperature=float(node.get("temperature", 0.1)),
             top_p=float(node.get("top_p", 0.95)),
             max_tokens=int(node.get("max_tokens", 4096)),
             enable_thinking=bool(node.get("enable_thinking", True)),
-            max_retries=int(node.get("max_retries", 4)),
+            max_retries=max(1, int(node.get("max_retries", 4))),
+            json_retries=max(1, int(node.get("json_retries", 2))),
             retry_backoff=float(node.get("retry_backoff", 2.0)),
+            api_key_env=str(node.get("api_key_env", "NVIDIA_API_KEY")),
+            timeout=max(1, int(node.get("timeout", 60))),
+            fallback=ModelFallbackConfig.parse(node.get("fallback"), "llm.fallback"),
         )
 
 
@@ -242,12 +297,24 @@ class VLMConfig:
     retry_backoff: float = 2.0
     max_workers: int = 4
     image_max_side: int = 768
+    api_key_env: str = "VLM_API_KEY"
+    timeout: int = 120
+    fallback: ModelFallbackConfig = field(default_factory=ModelFallbackConfig)
 
     @classmethod
     def parse(cls, node: dict[str, Any]) -> "VLMConfig":
+        provider = str(node.get("provider", "nvidia")).lower()
+        if provider not in {"nvidia", "openai-compatible"}:
+            raise ConfigError(
+                f"vlm.provider must be nvidia|openai-compatible, got {provider!r}"
+            )
         return cls(
-            provider=str(node.get("provider", "nvidia")),
-            model=str(_require(node, "model", "vlm")),
+            provider=provider,
+            model=str(
+                _env("VLM_MODEL")
+                or _env("VLM_model")  # backward-compatible with the current .env
+                or _require(node, "model", "vlm")
+            ),
             base_url=node.get("base_url"),
             max_tokens=int(node.get("max_tokens", 256)),
             temperature=float(node.get("temperature", 0.0)),
@@ -255,6 +322,9 @@ class VLMConfig:
             retry_backoff=float(node.get("retry_backoff", 2.0)),
             max_workers=int(node.get("max_workers", 4)),
             image_max_side=int(node.get("image_max_side", 768)),
+            api_key_env=str(node.get("api_key_env", "VLM_API_KEY")),
+            timeout=max(1, int(node.get("timeout", 120))),
+            fallback=ModelFallbackConfig.parse(node.get("fallback"), "vlm.fallback"),
         )
 
 
@@ -331,25 +401,62 @@ class BGERerankConfig:
 
 
 @dataclass
+class Qwen3VLRerankConfig:
+    """Unified multimodal reranker applied once after path fusion."""
+
+    enabled: bool = False
+    model_id: str = "Qwen/Qwen3-VL-Reranker-2B"
+    device: str = "cuda"
+    top_n: int = 25
+    weight: float = 1.0
+    max_length: int = 4096
+    min_pixels: int = 4096
+    max_pixels: int = 921600
+    torch_dtype: str = "bfloat16"
+    instruction: str = "Retrieve video keyframes relevant to the user's query."
+
+    @classmethod
+    def parse(cls, node: dict[str, Any]) -> "Qwen3VLRerankConfig":
+        node = node or {}
+        return cls(
+            enabled=bool(node.get("enabled", False)),
+            model_id=str(node.get("model_id", "Qwen/Qwen3-VL-Reranker-2B")),
+            device=resolve_device(str(node.get("device", "cuda"))),
+            top_n=int(node.get("top_n", 25)),
+            weight=float(node.get("weight", 1.0)),
+            max_length=int(node.get("max_length", 4096)),
+            min_pixels=int(node.get("min_pixels", 4096)),
+            max_pixels=int(node.get("max_pixels", 921600)),
+            torch_dtype=str(node.get("torch_dtype", "bfloat16")),
+            instruction=str(node.get(
+                "instruction",
+                "Retrieve video keyframes relevant to the user's query.",
+            )),
+        )
+
+
+@dataclass
 class RerankConfig:
     blip2: Blip2RerankConfig = field(default_factory=Blip2RerankConfig)
     bge: BGERerankConfig = field(default_factory=BGERerankConfig)
+    qwen3_vl: Qwen3VLRerankConfig = field(default_factory=Qwen3VLRerankConfig)
 
     @property
     def enabled(self) -> bool:
         """True when either reranker is enabled."""
-        return self.blip2.enabled or self.bge.enabled
+        return self.qwen3_vl.enabled or self.blip2.enabled or self.bge.enabled
 
     @classmethod
     def parse(cls, node: dict[str, Any]) -> "RerankConfig":
         node = node or {}
+        qwen3_vl = Qwen3VLRerankConfig.parse(node.get("qwen3_vl") or {})
         if "blip2" in node or "bge" in node:
             blip2 = Blip2RerankConfig.parse(node.get("blip2") or {})
             bge = BGERerankConfig.parse(node.get("bge") or {})
         else:
             blip2 = Blip2RerankConfig.parse(node)
             bge = BGERerankConfig(enabled=False)
-        return cls(blip2=blip2, bge=bge)
+        return cls(blip2=blip2, bge=bge, qwen3_vl=qwen3_vl)
 
 
 @dataclass
@@ -415,23 +522,36 @@ class SubmissionConfig:
 
 @dataclass
 class VQAConfig:
+    mode: str = "vision"
     vlm_top_n: int = 25
+    vlm_images_per_video: int = 4
     llm_top_n: int = 25
     propagate: bool = True
     enrich_context: bool = True
     answer_max_chars: int = 100
     fallback_answer: str = "unknown"
+    cross_shot_evidence: bool = True
+    evidence_video_top_n: int = 8
+    evidence_top_n: int = 24
 
     @classmethod
     def parse(cls, node: dict[str, Any]) -> "VQAConfig":
         top_n = int(node.get("llm_top_n") or node.get("vlm_top_n", 25))
+        mode = str(node.get("mode", "vision")).lower()
+        if mode not in {"vision", "text_only"}:
+            raise ConfigError(f"vqa.mode must be vision|text_only, got {mode!r}")
         return cls(
+            mode=mode,
             vlm_top_n=top_n,
+            vlm_images_per_video=max(1, int(node.get("vlm_images_per_video", 4))),
             llm_top_n=top_n,
             propagate=bool(node.get("propagate", True)),
             enrich_context=bool(node.get("enrich_context", True)),
             answer_max_chars=int(node.get("answer_max_chars", 100)),
             fallback_answer=str(node.get("fallback_answer", "unknown")),
+            cross_shot_evidence=bool(node.get("cross_shot_evidence", True)),
+            evidence_video_top_n=int(node.get("evidence_video_top_n", 8)),
+            evidence_top_n=int(node.get("evidence_top_n", 24)),
         )
 
 
@@ -623,6 +743,12 @@ class Config:
             raise ConfigError("fusion.adaptive_floor must be within [0, 1]")
         if self.vqa.answer_max_chars <= 0:
             raise ConfigError("vqa.answer_max_chars must be positive")
+        if self.vqa.evidence_video_top_n <= 0:
+            raise ConfigError("vqa.evidence_video_top_n must be positive")
+        if self.vqa.evidence_top_n <= 0:
+            raise ConfigError("vqa.evidence_top_n must be positive")
+        if self.rerank.qwen3_vl.enabled and self.rerank.qwen3_vl.top_n <= 0:
+            raise ConfigError("rerank.qwen3_vl.top_n must be positive")
         if not self.embedding.siglip.enabled and not self.embedding.beit3.enabled:
             raise ConfigError(
                 "Both embedding.siglip.enabled and embedding.beit3.enabled are false - "

@@ -70,8 +70,18 @@ class TextEncoder(ABC):
         with self._lock:
             if self._loaded:
                 return
-            log.info("Loading %s text encoder (%s) on %s",
-                     self.name, self.cfg.model_id, self.cfg.device)
+            log.info(
+                "Loading %s text encoder (%s) on %s",
+                self.name,
+                self.cfg.model_id,
+                self.cfg.device,
+                extra={"progress": {
+                    "phase": "model",
+                    "status": "running",
+                    "title": f"Đang nạp {self.name} encoder",
+                    "detail": f"{self.cfg.model_id} trên {self.cfg.device}",
+                }},
+            )
             self._load()
             self._loaded = True
 

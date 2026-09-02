@@ -11,10 +11,18 @@ langchain-nvidia-ai-endpoints>=0.3
 langchain-core>=0.3
 requests>=2.31
 
+# --- local web UI ---------------------------------------------------------
+fastapi>=0.115
+uvicorn[standard]>=0.30
+
 # --- embedding ------------------------------------------------------------
 torch>=2.1
-transformers>=4.40
-sentence-transformers>=2.7
+torchvision>=0.22
+transformers>=4.57.3
+accelerate>=1.12.0
+qwen-vl-utils>=0.0.14
+sentence-transformers[image]>=5.2
+huggingface-hub>=0.34
 pillow>=10.0
 sentencepiece>=0.1.99          # BEiT-3 tokenizer
 # open_clip_torch>=2.24        # only if embedding.siglip.backend == "open_clip"

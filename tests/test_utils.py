@@ -201,6 +201,22 @@ def test_missing_map_falls_back_to_file_order(tmp_path):
     assert index.videos["L01_V001"].exact is False
 
 
+def test_scene_sample_filename_is_an_exact_frame_map(tmp_path):
+    root = tmp_path / "keyframes" / "L01_V001"
+    root.mkdir(parents=True)
+    (root / "scene_0002_frame_000754_2.jpg").write_bytes(b"x")
+    (root / "scene_0001_frame_000117_0.jpg").write_bytes(b"x")
+    # Duplicate variants of one sampled frame are collapsed deterministically.
+    (root / "scene_0002_frame_000754_0.jpg").write_bytes(b"x")
+
+    index = KeyframeIndex(tmp_path / "keyframes", None, None)
+
+    assert index.all_frames("L01_V001") == [117, 754]
+    assert index.path_of("L01_V001", 117).name == "scene_0001_frame_000117_0.jpg"
+    assert index.path_of("L01_V001", 754).name == "scene_0002_frame_000754_0.jpg"
+    assert index.videos["L01_V001"].exact is True
+
+
 def test_metadata_json_is_used_when_no_csv_exists(tmp_path):
     root = tmp_path / "keyframes" / "L01_V001"
     root.mkdir(parents=True)

@@ -27,6 +27,7 @@ class TextSearcher:
         terms: list[str] | None = None,
         size: int | None = None,
         exact_text: bool = False,
+        video_ids: Sequence[str] | None = None,
     ) -> list[Candidate]:
         """Search the OCR field.  ``exact_text`` boosts the phrase clause hard."""
         return self._search(
@@ -36,6 +37,7 @@ class TextSearcher:
             terms=terms or [],
             size=size,
             exact_text=exact_text,
+            video_ids=video_ids,
         )
 
     def search_asr(
@@ -43,6 +45,7 @@ class TextSearcher:
         query: str | None,
         terms: list[str] | None = None,
         size: int | None = None,
+        video_ids: Sequence[str] | None = None,
     ) -> list[Candidate]:
         """Search the ASR field."""
         return self._search(
@@ -52,6 +55,7 @@ class TextSearcher:
             terms=terms or [],
             size=size,
             exact_text=False,
+            video_ids=video_ids,
         )
 
     def search_description(
@@ -59,6 +63,7 @@ class TextSearcher:
         query: str | None,
         terms: list[str] | None = None,
         size: int | None = None,
+        video_ids: Sequence[str] | None = None,
     ) -> list[Candidate]:
         """Search the dense natural language description field."""
         return self._search(
@@ -68,6 +73,7 @@ class TextSearcher:
             terms=terms or [],
             size=size,
             exact_text=False,
+            video_ids=video_ids,
         )
 
     # ------------------------------------------------------------------
@@ -79,6 +85,7 @@ class TextSearcher:
         terms: list[str],
         size: int | None,
         exact_text: bool,
+        video_ids: Sequence[str] | None = None,
     ) -> list[Candidate]:
         """Build, run and parse one field-scoped BM25 query."""
         main = normalize_query(query)
@@ -88,7 +95,9 @@ class TextSearcher:
             return []
 
         size = size or self.cfg.size
-        body = self.build_body(field, main, term_blob, size, exact_text)
+        body = self.build_body(
+            field, main, term_blob, size, exact_text, video_ids=video_ids
+        )
         try:
             hits = self.client.search(body, size=size)
         except Exception as exc:  # noqa: BLE001 - a dead path must not kill the run
@@ -104,6 +113,7 @@ class TextSearcher:
         term_blob: str,
         size: int,
         exact_text: bool,
+        video_ids: Sequence[str] | None = None,
     ) -> dict[str, Any]:
         """Assemble the ES query body (kept public so tests can inspect it)."""
         boosts = self.cfg.boosts
@@ -133,8 +143,15 @@ class TextSearcher:
                 if alt not in source_fields:
                     source_fields.append(alt)
 
+        bool_query: dict[str, Any] = {"should": should, "minimum_should_match": 1}
+        if video_ids:
+            clean_ids = sorted({str(v).removesuffix(".mp4") for v in video_ids if str(v).strip()})
+            accepted_ids = [item for v in clean_ids for item in (v, f"{v}.mp4")]
+            video_field = self.cfg.fields.get("video_id", "video_id")
+            bool_query["filter"] = [{"terms": {video_field: accepted_ids}}]
+
         body: dict[str, Any] = {
-            "query": {"bool": {"should": should, "minimum_should_match": 1}},
+            "query": {"bool": bool_query},
             "_source": source_fields,
         }
         if self.cfg.min_score > 0:
@@ -356,4 +373,3 @@ class TextSearcher:
             len(result), len(targets),
         )
         return result
-

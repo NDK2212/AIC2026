@@ -24,8 +24,11 @@ from .cache import DiskCache
 
 log = get_logger(__name__)
 
-_CACHE_VERSION = 2
+_CACHE_VERSION = 3
 _NUM_RE = re.compile(r"(\d+)")
+_SCENE_FRAME_RE = re.compile(
+    r"^scene_\d+_frame_(\d+)(?:_\d+)?$", re.IGNORECASE
+)
 
 # Keys that may hold the original frame index inside a metadata JSON blob.
 _FRAME_KEYS = ("frame_idx", "frame_id", "frame_index", "frameIdx", "idx", "frame")
@@ -159,6 +162,39 @@ class KeyframeIndex:
             images = sorted(video_dir.glob(self.image_glob), key=_natural_key)
             if not images:
                 continue
+
+            # Scene-sampled AIC keyframes carry the original video frame in
+            # their filename, e.g. scene_0105_frame_029630_1.jpg.  This is a
+            # stronger source of truth than an unrelated legacy map-keyframes
+            # CSV and lets local SSD images match Qdrant/ES frame IDs exactly.
+            filename_pairs = [
+                (_scene_frame_id(image), image) for image in images
+            ]
+            if all(frame_id is not None for frame_id, _ in filename_pairs):
+                pairs = sorted(
+                    ((int(frame_id), image) for frame_id, image in filename_pairs),
+                    key=lambda pair: (pair[0], _natural_key(pair[1])),
+                )
+                unique_pairs: list[tuple[int, Path]] = []
+                seen_frames: set[int] = set()
+                for frame_id, image in pairs:
+                    if frame_id in seen_frames:
+                        continue
+                    seen_frames.add(frame_id)
+                    unique_pairs.append((frame_id, image))
+                if len(unique_pairs) != len(pairs):
+                    log.debug(
+                        "%s: collapsed %d duplicate scene samples with the same frame id",
+                        video_id, len(pairs) - len(unique_pairs),
+                    )
+                videos[video_id] = VideoKeyframes(
+                    video_id=video_id,
+                    frame_ids=[frame_id for frame_id, _ in unique_pairs],
+                    paths=[str(path) for _, path in unique_pairs],
+                    exact=True,
+                )
+                continue
+
             mapping = self._read_map(video_id, len(images))
             if mapping is None:
                 mapping = list(range(len(images)))
@@ -222,24 +258,28 @@ class KeyframeIndex:
         if video_id in self.videos:
             return self.videos[video_id]
 
-        if self.minio is not None and getattr(self.minio, "enabled", False):
-            if video_id in self._minio_video_maps:
-                fmap = self._minio_video_maps[video_id]
-            else:
-                fmap = self.minio.discover_video_frames(video_id)
-                self._minio_video_maps[video_id] = fmap
-
-            if fmap:
-                fids = sorted(fmap.keys())
-                vk = VideoKeyframes(
-                    video_id=video_id,
-                    frame_ids=fids,
-                    paths=[fmap[fid] for fid in fids],
-                    exact=True,
-                )
-                self.videos[video_id] = vk
-                return vk
+        fmap = self._minio_frames(video_id)
+        if fmap:
+            fids = sorted(fmap.keys())
+            vk = VideoKeyframes(
+                video_id=video_id,
+                frame_ids=fids,
+                paths=[fmap[fid] for fid in fids],
+                exact=True,
+            )
+            self.videos[video_id] = vk
+            return vk
         return None
+
+    def _minio_frames(self, video_id: str) -> dict[int, str]:
+        """Discover and memoize the remote frame map, including empty misses."""
+        if self.minio is None or not getattr(self.minio, "enabled", False):
+            return {}
+        if video_id not in self._minio_video_maps:
+            self._minio_video_maps[video_id] = (
+                self.minio.discover_video_frames(video_id) or {}
+            )
+        return self._minio_video_maps[video_id]
 
     def has_video(self, video_id: str) -> bool:
         """True when this video has a keyframe table."""
@@ -300,8 +340,9 @@ class KeyframeIndex:
             except Exception:
                 pass
 
-        # 2. Check local dataset root
-        local_path = self.resolve_image(video_id, frame_id)
+        # 2. Prefer an exact local keyframe.  Do not snap yet: MinIO may have
+        # the exact requested frame even when this local batch does not.
+        local_path = self.path_of(video_id, frame_id)
         if local_path and local_path.is_file():
             try:
                 with Image.open(local_path) as img:
@@ -309,14 +350,16 @@ class KeyframeIndex:
             except Exception:
                 pass
 
-        # 3. Fetch from MinIO if available
+        # 3. Fetch from MinIO if available. This also covers a frame missing
+        # inside an otherwise locally indexed video.
         if self.minio is not None and getattr(self.minio, "enabled", False):
-            video = self._ensure_video(video_id)
-            if video:
-                pos = video.position(int(frame_id))
-                if pos is None:
-                    pos = video.nearest_position(int(frame_id))
-                obj_name = video.paths[pos]
+            remote_frames = self._minio_frames(video_id)
+            if remote_frames:
+                requested = int(frame_id)
+                remote_id = requested if requested in remote_frames else min(
+                    remote_frames, key=lambda value: abs(value - requested)
+                )
+                obj_name = remote_frames[remote_id]
                 img = self.minio.get_image(obj_name)
                 if img is not None:
                     # Save to local disk cache for fast future reuse
@@ -326,6 +369,16 @@ class KeyframeIndex:
                     except Exception as exc:
                         log.debug("Failed to cache image to %s: %s", cached_file, exc)
                     return img
+
+        # 4. Last-resort local snap keeps the UI usable when neither tier has
+        # the exact candidate frame.
+        nearest_local = self.nearest(video_id, frame_id)
+        if nearest_local and nearest_local[1].is_file():
+            try:
+                with Image.open(nearest_local[1]) as img:
+                    return img.convert("RGB")
+            except Exception:
+                pass
         return None
 
     def batch_get_images(
@@ -453,6 +506,12 @@ def _natural_key(path: Path) -> tuple[Any, ...]:
     """Sort ``9.jpg`` before ``10.jpg``."""
     parts = _NUM_RE.split(path.stem)
     return tuple(int(p) if p.isdigit() else p for p in parts)
+
+
+def _scene_frame_id(path: Path) -> int | None:
+    """Original frame ID encoded by AIC scene-sampled keyframe filenames."""
+    match = _SCENE_FRAME_RE.fullmatch(path.stem)
+    return int(match.group(1)) if match else None
 
 
 def _read_map_csv(path: Path) -> list[int] | None:
