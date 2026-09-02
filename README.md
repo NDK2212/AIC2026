@@ -1,8 +1,8 @@
 # AIC 2026 — Online Search Pipeline
 
-Terminal codebase for the three AIC 2026 preliminary-round tasks: **Textual KIS**,
-**Q&A (VQA)** and **TRAKE**. Offline indexing is assumed done — Qdrant holds the
-keyframe embeddings and Elasticsearch holds the OCR/ASR text.
+Hệ thống tìm kiếm video cho ba tác vụ vòng sơ tuyển AIC 2026: **Textual KIS**,
+**Q&A (VQA)** và **TRAKE**. Dự án giả định dữ liệu đã được index: Qdrant lưu
+embedding của keyframe, còn Elasticsearch lưu OCR, ASR và mô tả khung hình.
 
 ```
 query
@@ -28,138 +28,204 @@ query
 
 ---
 
-## 1. Install
+## 1. Cài đặt và cấu hình
 
-Requirements: Python 3.10+ and Node.js 20+ with `npm`.
+### 1.1. Yêu cầu
+
+- Python 3.10 trở lên.
+- Node.js 20 trở lên và `npm` để cài hoặc phát triển giao diện React.
+- Quyền truy cập Qdrant, Elasticsearch và kho keyframe (thư mục cục bộ hoặc
+  MinIO).
+- NVIDIA API key cho LLM/VLM. GPU CUDA được khuyến nghị nếu bật
+  `rerank.qwen3_vl`; cấu hình mặc định chạy reranker trên CUDA.
+
+Tại thư mục gốc của dự án, chạy:
 
 ```bash
 make install
 ```
 
-This creates `.venv`, installs every Python dependency from `requirements.txt`,
-and runs `npm ci` for the React frontend. It also creates `.env` from
-`.env.example` only when `.env` does not already exist. Make commands invoke
-`.venv/bin/python` directly, so manual virtual-environment activation is not
-required.
+Lệnh này tạo `.venv`, cài dependency Python và chạy `npm ci` cho frontend. Nếu
+chưa có `.env`, lệnh cũng sao chép `.env.example` thành `.env`. Các lệnh `make`
+dùng trực tiếp Python trong `.venv`, vì vậy không cần kích hoạt virtualenv.
 
-`.env` holds every secret — nothing is ever hard-coded in the source:
+Nếu chỉ chạy backend bằng bundle React có sẵn, có thể cài riêng phần Python:
 
-| variable | used for |
+```bash
+make install-backend
+test -f .env || cp .env.example .env
+```
+
+### 1.2. Khai báo biến môi trường
+
+Mở `.env` và điền các thông tin kết nối cần thiết. Không commit file `.env`.
+
+| Biến | Mục đích |
 |---|---|
-| `NVIDIA_API_KEY` | the decomposition LLM and (by default) the VLM |
-| `QDRANT_API_KEY` | Qdrant, if it needs auth |
-| `ES_USER` / `ES_PASSWORD` | Elasticsearch basic auth |
-| `ES_API_KEY` | Elasticsearch API-key auth (instead of user/password) |
-| `VLM_API_KEY` | a separate vision endpoint; falls back to `NVIDIA_API_KEY` |
-| `VLM_MODEL` | primary multimodal model id; defaults to `moonshotai/kimi-k3` |
+| `NVIDIA_API_KEY` | LLM phân rã truy vấn và VLM mặc định |
+| `QDRANT_API_KEY` | Xác thực Qdrant; để trống nếu không dùng auth |
+| `ES_USER` / `ES_PASSWORD` | Basic authentication của Elasticsearch |
+| `ES_API_KEY` | API key Elasticsearch, dùng thay user/password |
+| `VLM_API_KEY` | Key riêng cho VLM; mặc định dùng `NVIDIA_API_KEY` |
+| `VLM_MODEL` | Model đa phương thức chính, mặc định `moonshotai/kimi-k3` |
+| `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY` | Ghi đè kết nối MinIO trong YAML khi cần |
+
+### 1.3. Trỏ cấu hình đến dữ liệu
+
+Kiểm tra `config/config.yaml`, tối thiểu gồm:
+
+- `qdrant.url`, `qdrant.collection`, `qdrant.vector_names` và
+  `qdrant.payload`;
+- `elasticsearch.hosts`, `elasticsearch.index` và `elasticsearch.fields`;
+- model và `dim` của các encoder đang bật trong `embedding.*` — phải giống hoàn
+  toàn model đã dùng khi index;
+- `keyframes.root` nếu dùng ảnh cục bộ, hoặc phần `minio` nếu lấy ảnh từ MinIO;
+- `rerank.qwen3_vl.device`: chuyển sang `cpu` hoặc tắt `enabled` nếu máy không có
+  CUDA.
+
+Kiểm tra kết nối trước, chưa cần tải các model embedding:
+
+```bash
+.venv/bin/python -m src.cli inspect --skip-encoders
+```
+
+Sau đó chạy kiểm tra đầy đủ để đối chiếu kích thước vector của encoder với
+collection Qdrant:
+
+```bash
+.venv/bin/python -m src.cli inspect
+```
+
+Nếu thiếu checkpoint/reference code của BEiT-3, đặt
+`embedding.beit3.enabled: false`; pipeline sẽ tiếp tục bằng các encoder còn bật.
 
 ---
 
-## 2. Point the config at your data
+## 2. Sử dụng giao diện web
 
-Open `config/config.yaml` and set at minimum:
+### 2.1. Khởi động
 
-* `qdrant.url`, `qdrant.collection`, `qdrant.vector_names`, `qdrant.payload`
-* `elasticsearch.hosts`, `elasticsearch.index`, `elasticsearch.fields`
-* `embedding.siglip.model_id` / `embedding.beit3.*` — **must be the same models
-  used at indexing time**, otherwise the query vectors live in a different space
-* `keyframes.root`, `keyframes.map_dir`, `keyframes.metadata_dir`
-
-Then verify the wiring before spending any API quota:
-
-```bash
-python -m src.cli inspect
-```
-
-`inspect` prints the *real* Qdrant vector names and dimensions, the *real* ES
-field mapping, and asserts each encoder's width equals its collection vector's
-width. A mismatch is a hard error at start-up — never a silently wrong result.
-Add `--skip-encoders` to check only the databases.
-
-### BEiT-3 without a checkpoint
-
-BEiT-3 has no first-class `transformers` implementation. If the checkpoint or
-the reference code is unavailable, the visual path logs a warning and continues
-on SigLIP alone. To make that explicit, set `embedding.beit3.enabled: false`.
-
----
-
-## 3. Run
-
-For direct CLI commands, activate the environment once with
-`source .venv/bin/activate`; the `make` commands below do not require this.
-
-```bash
-# debug the decomposition prompt
-python -m src.cli decompose --query "Tìm video có người mặc áo đỏ..."
-
-# debug fusion: fused top-k with each path's contribution
-python -m src.cli search --query "..." --topk 20
-
-# one query at a time
-python -m src.cli kis   --query-file queries/query-1-kis.txt
-python -m src.cli qa    --query-file queries/query-3-qa.txt
-python -m src.cli trake --query-file queries/query-4-trake.txt
-
-# the whole package (task detected from the -kis / -qa / -trake suffix)
-python -m src.cli batch --query-dir queries/ --out-dir outputs/submission/
-
-# check, then package
-python -m src.cli validate --dir outputs/submission/
-python -m src.cli pack     --dir outputs/submission/ --out teamABC1.zip
-```
-
-Global flags: `--config`, `--no-cache`, `-v/--verbose`, `--dry-run`.
-
-`batch` never stops on a single failing query — it logs the error, continues,
-and prints a success/failure table at the end.
-
-### React web workbench
-
-Run only the FastAPI backend (including the committed production React bundle):
+Cách đơn giản nhất là chạy FastAPI cùng bundle React đã build sẵn:
 
 ```bash
 make backend
 ```
 
-Open <http://localhost:7860>. Interactive API documentation is available at
-<http://localhost:7860/api/docs> and the OpenAPI schema at
-<http://localhost:7860/api/openapi.json>.
+Mở <http://localhost:7860>. Các đèn trạng thái ở góc trên cho biết kết nối tới
+Elasticsearch và Qdrant. API docs nằm tại <http://localhost:7860/api/docs>.
 
-Run only the Vite development server with hot reload:
+Quy trình sử dụng:
 
-```bash
-make frontend
-```
+1. Chọn tác vụ **KIS**, **VQA** hoặc **TRAKE** trên thanh đầu trang.
+2. Nhập truy vấn rồi nhấn **Chạy pipeline** (hoặc Enter). Với TRAKE, mô tả các
+   sự kiện theo đúng thứ tự thời gian.
+3. Theo dõi tiến trình và lỗi trong pipeline trace; nút **Live logs** mở log
+   backend theo thời gian thực.
+4. Kiểm tra kết quả. Có thể ghim một kết quả lên Top 1, mở **Xem 25 frame** để
+   chọn keyframe lân cận, sửa câu trả lời VQA, hoặc thay frame của từng bước
+   TRAKE.
+5. Nhấn **Xuất CSV** sau khi đã chốt thứ tự và nội dung kết quả.
 
-Open <http://localhost:5173>. Vite proxies `/api/*` to FastAPI at port `7860`,
-so the backend must also be running for search and image requests.
+Tên file tải từ web là `kis_submission.csv`, `vqa_submission.csv` hoặc
+`trake_submission.csv`. Trước khi nộp, đổi tên file theo đúng tên query của ban
+tổ chức, ví dụ `query-p2-1-kis.txt` thành `query-p2-1-kis.csv`.
 
-Run both development servers together:
+Nút cấu hình cho phép chỉnh retrieval paths, fusion, reranker, tham số tác vụ,
+submission và API-key pool cho lần chạy hiện tại. Các thay đổi này chỉ tồn tại
+trong phiên giao diện/request; muốn dùng làm mặc định sau khi khởi động lại, hãy
+sửa `config/config.yaml`. API key nhập trên giao diện cũng chỉ được giữ trong bộ
+nhớ của backend.
+
+### 2.2. Chế độ phát triển frontend
+
+Chạy backend và Vite hot reload cùng lúc:
 
 ```bash
 make full
 ```
 
-Press `Ctrl+C` once to stop both processes. Host, port and config can be
-overridden without editing the Makefile, for example:
+Mở <http://localhost:5173> và nhấn `Ctrl+C` để dừng cả hai tiến trình. Có thể đổi
+host, port và config mà không sửa Makefile:
 
 ```bash
 make backend BACKEND_PORT=8000 CONFIG=config/config.yaml
-make frontend FRONTEND_PORT=3000
+make frontend FRONTEND_PORT=3000 BACKEND_URL=http://127.0.0.1:8000
 ```
 
-`make full BACKEND_PORT=8000` also passes the matching backend URL to Vite's
-proxy automatically. To use another backend host, set `BACKEND_URL`, for example
-`make frontend BACKEND_URL=http://192.168.1.10:8000`. To rebuild the production
-bundle served by FastAPI after frontend changes, run `make build-frontend`.
+Sau khi sửa frontend, build lại bundle được FastAPI phục vụ:
 
-### Debugging a bad result
+```bash
+make build-frontend
+```
 
-Every retrieval writes `outputs/runs/<timestamp>_<query>.json` containing the
-decomposition, the top-20 of *each* path, the fusion weights actually used and
-the fused top-50. That file is the first place to look when a query misses.
-Console and file logs both land in `outputs/runs/run.log`.
+---
+
+## 3. Sử dụng CLI và tạo bài nộp
+
+Các ví dụ dưới đây gọi trực tiếp Python trong `.venv`. Nếu đã chạy
+`source .venv/bin/activate`, có thể thay `.venv/bin/python` bằng `python`.
+
+### 3.1. Chạy một truy vấn
+
+```bash
+# Xem kết quả phân rã truy vấn
+.venv/bin/python -m src.cli decompose --query "Tìm video có người mặc áo đỏ"
+
+# Chạy retrieval và in top 20 kèm đóng góp của từng path
+.venv/bin/python -m src.cli search --query "Tìm video có người mặc áo đỏ" --topk 20
+
+# Sinh CSV cho từng tác vụ
+.venv/bin/python -m src.cli kis queries/query-1-kis.txt
+.venv/bin/python -m src.cli qa queries/query-3-qa.txt
+.venv/bin/python -m src.cli trake queries/query-4-trake.txt
+```
+
+Mặc định CSV được ghi vào `outputs/submission/<tên-query>.csv`. Dùng `--out` để
+chọn đường dẫn khác, hoặc `--dry-run` để chạy pipeline và xem trước mà không ghi
+CSV.
+
+### 3.2. Chạy hàng loạt
+
+Tên file query phải kết thúc bằng `-kis.txt`, `-qa.txt` hoặc `-trake.txt` để CLI
+tự nhận diện tác vụ:
+
+```bash
+.venv/bin/python -m src.cli batch queries/ --out-dir outputs/submission/
+```
+
+Mỗi file lỗi được ghi nhận riêng; `batch` tiếp tục xử lý các file còn lại và in
+bảng tổng kết ở cuối.
+
+### 3.3. Kiểm tra và đóng gói
+
+```bash
+.venv/bin/python -m src.cli validate --dir outputs/submission/
+.venv/bin/python -m src.cli pack --dir outputs/submission/ --out teamABC1.zip
+```
+
+`pack` chỉ tạo ZIP sau khi toàn bộ CSV hợp lệ. Bên trong ZIP luôn có cấu trúc
+`submission/<tên-query>.csv` theo yêu cầu cuộc thi.
+
+Các cờ dùng chung: `--config PATH`, `--no-cache`, `-v`/`--verbose` và
+`--dry-run`. Dùng `.venv/bin/python -m src.cli --help` hoặc thêm `--help` sau
+từng subcommand để xem toàn bộ tùy chọn.
+
+### 3.4. Xử lý lỗi thường gặp
+
+- **ES/Qdrant báo offline:** kiểm tra URL, index/collection, credential trong
+  `.env`, sau đó chạy lại `inspect --skip-encoders`.
+- **Sai kích thước vector:** model hoặc `dim` trong `embedding.*` không khớp lúc
+  index; không nên bỏ qua lỗi này.
+- **Không tải được ảnh:** kiểm tra `keyframes.root`; nếu dùng MinIO, kiểm tra
+  endpoint, bucket, prefix và credential.
+- **CUDA out of memory:** giảm `rerank.qwen3_vl.top_n`/`max_pixels`, chuyển
+  reranker sang CPU hoặc tắt reranker.
+- **NVIDIA API lỗi:** kiểm tra API key. Fallback mặc định cần Ollama đang chạy và
+  có model `qwen3-vl:2b-instruct`; nếu không dùng fallback, đặt
+  `llm.fallback.enabled: false` và `vlm.fallback.enabled: false`.
+- **Kết quả tìm kiếm chưa tốt:** xem `outputs/runs/<timestamp>_<query>.json` để
+  kiểm tra decomposition, kết quả từng path, fusion weights và top fused.
+  Log tổng nằm ở `outputs/runs/run.log`.
 
 ---
 

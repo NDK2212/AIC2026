@@ -12,6 +12,7 @@ export default defineConfig(({ command }) => ({
     sourcemap: false,
   },
   server: {
+    allowedHosts: ["mvp.viettech.fit"],
     proxy: {
       "/api": process.env.VITE_API_TARGET || "http://127.0.0.1:7860",
     },
