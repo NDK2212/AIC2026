@@ -137,11 +137,11 @@ class BEiT3TextEncoder(TextEncoder):
             ) from exc
 
         self._tokenizer = self._load_spm()
-        if str(self.cfg.device).lower() not in ("cpu", "auto"):
-            try:
-                model.to(self.cfg.device)
-            except Exception:
-                pass
+        target_device = "cpu" if str(self.cfg.device).lower() in ("cpu", "auto") else self.cfg.device
+        try:
+            model = model.to(target_device)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Could not move BEiT-3 to %s: %s", target_device, exc)
         model.eval()
         self._model = model
         self._mode = "torchscale"
@@ -165,6 +165,7 @@ class BEiT3TextEncoder(TextEncoder):
     # ------------------------------------------------------------------
     def _encode_batch(self, texts: list[str]) -> np.ndarray:
         torch = self._torch
+        target_device = getattr(self._model, "device", None) or ("cpu" if str(self.cfg.device).lower() in ("cpu", "auto") else self.cfg.device)
         batch = self._tokenizer(
             texts,
             padding=True,
@@ -172,8 +173,8 @@ class BEiT3TextEncoder(TextEncoder):
             max_length=self.cfg.max_length,
             return_tensors="pt",
         )
-        input_ids = batch["input_ids"].to(self.cfg.device)
-        attention_mask = batch["attention_mask"].to(self.cfg.device)
+        input_ids = batch["input_ids"].to(target_device)
+        attention_mask = batch["attention_mask"].to(target_device)
         padding_mask = (attention_mask == 0)
 
         with torch.inference_mode():

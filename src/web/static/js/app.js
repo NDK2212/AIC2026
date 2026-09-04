@@ -259,6 +259,10 @@ function applyConfigToUI(cfg) {
     setVal("rngWeightVis", "valWeightVis", cfg.retrieval_paths.visual.weight);
   }
   if (cfg.rerank) {
+    const chkBlip = document.getElementById("chkBlipRerank");
+    if (chkBlip) chkBlip.checked = Boolean(cfg.rerank.blip2.enabled);
+    const chkBge = document.getElementById("chkBgeRerank");
+    if (chkBge) chkBge.checked = Boolean(cfg.rerank.bge.enabled);
     setVal("rngBlipTopN", "valBlipTopN", cfg.rerank.blip2.top_n);
     setVal("rngBlipWeight", "valBlipWeight", cfg.rerank.blip2.weight);
     setVal("rngBgeTopN", "valBgeTopN", cfg.rerank.bge.top_n);
@@ -724,7 +728,7 @@ window.openNeighborModal = async function (videoId, frameId, rank, index) {
   state.selectedNeighborFrame = { videoId, frameId };
 
   el.modalVideoTitle.textContent = `Video: ${videoId} | Target Frame: #${frameId} (Rank #${rank})`;
-  el.neighborFilmstrip.innerHTML = `<div style="color:var(--text-muted);padding:20px;">Đang tải 25 frame lân cận từ Elasticsearch & MinIO...</div>`;
+  el.neighborFilmstrip.innerHTML = `<div style="color:var(--text-muted);padding:20px;">Đang tải 50 frame lân cận từ Elasticsearch & MinIO...</div>`;
   el.neighborModal.style.display = "flex";
 
   try {

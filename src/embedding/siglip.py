@@ -59,7 +59,8 @@ class SigLIPTextEncoder(TextEncoder):
                 if os.path.isdir(p):
                     cache_hub = p
                     break
-        kw: dict[str, Any] = {}
+        target_device = "cpu" if str(self.cfg.device).lower() in ("cpu", "auto") else self.cfg.device
+        kw: dict[str, Any] = {"low_cpu_mem_usage": False}
         if cache_hub:
             kw["cache_dir"] = cache_hub
 
@@ -71,11 +72,10 @@ class SigLIPTextEncoder(TextEncoder):
                 f"Could not load SigLIP model {self.cfg.model_id!r}: {exc}"
             ) from exc
 
-        if str(self.cfg.device).lower() not in ("cpu", "auto"):
-            try:
-                model.to(self.cfg.device)
-            except Exception as exc:  # noqa: BLE001
-                log.warning("Could not move SigLIP to %s: %s", self.cfg.device, exc)
+        try:
+            model = model.to(target_device)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Could not move SigLIP to %s: %s", target_device, exc)
         model.eval()
         self._model = model
 
@@ -106,15 +106,17 @@ class SigLIPTextEncoder(TextEncoder):
                 f"Could not load open_clip model {self.cfg.model_id!r}: {exc}"
             ) from exc
 
-        model.eval().to(self.cfg.device)
+        target_device = "cpu" if str(self.cfg.device).lower() in ("cpu", "auto") else self.cfg.device
+        model.eval().to(target_device)
         self._model = model
 
     # ------------------------------------------------------------------
     def _encode_batch(self, texts: list[str]) -> np.ndarray:
         torch = self._torch
+        target_device = getattr(self._model, "device", None) or ("cpu" if str(self.cfg.device).lower() in ("cpu", "auto") else self.cfg.device)
         with torch.inference_mode():
             if self._backend == "open_clip":
-                tokens = self._tokenizer(texts).to(self.cfg.device)
+                tokens = self._tokenizer(texts).to(target_device)
                 features = self._model.encode_text(tokens)
             else:
                 batch = self._tokenizer(
@@ -124,7 +126,7 @@ class SigLIPTextEncoder(TextEncoder):
                     max_length=self.cfg.max_length,
                     return_tensors="pt",
                 )
-                batch = {k: v.to(self.cfg.device) for k, v in batch.items()}
+                batch = {k: v.to(target_device) for k, v in batch.items()}
                 features = self._model.get_text_features(**batch)
         return features.detach().float().cpu().numpy()
 

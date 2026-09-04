@@ -109,13 +109,15 @@ class VisualSearcher:
         if not encoders:
             return []
 
-        try:
-            vectors = {
-                name: encoder.encode_one(image_query)
-                for name, encoder in encoders.items()
-            }
-        except Exception as exc:  # noqa: BLE001
-            log.error("Query embedding failed: %s", exc)
+        vectors: dict[str, np.ndarray] = {}
+        for name, encoder in encoders.items():
+            try:
+                vectors[name] = encoder.encode_one(image_query)
+            except Exception as exc:
+                log.warning("Embedding with %s failed: %s - continuing with other encoders", name, exc)
+
+        if not vectors:
+            log.error("All query embeddings failed for visual search.")
             return []
 
         try:

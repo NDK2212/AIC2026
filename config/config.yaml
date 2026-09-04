@@ -106,14 +106,14 @@ fusion:
 
 rerank:
   blip2:
-    enabled: true             # BLIP ITM rerank inside visual path (after Qdrant)
+    enabled: false            # BLIP ITM rerank inside visual path (after Qdrant)
     model_id: "Salesforce/blip-itm-base-coco"
     device: "auto"
     top_n: 25
     batch_size: 16
     weight: 1.0
   bge:
-    enabled: true             # BGE cross-encoder rerank for text paths
+    enabled: false            # BGE cross-encoder rerank for text paths
     model_id: "BAAI/bge-reranker-v2-m3"
     device: "auto"
     top_n: 25

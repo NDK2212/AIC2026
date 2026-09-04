@@ -261,12 +261,18 @@ class WebApp:
             if frame_id in all_frames:
                 idx = all_frames.index(frame_id)
             else:
-                # Closest
                 closest = min(all_frames, key=lambda x: abs(x - frame_id))
                 idx = all_frames.index(closest)
 
-            start = max(0, idx - 12)
-            end = min(len(all_frames), idx + 13)
+            count_param = 50
+            try:
+                count_param = int(request.query.get("count", 50))
+            except (ValueError, TypeError):
+                count_param = 50
+
+            half = count_param // 2
+            start = max(0, idx - half)
+            end = min(len(all_frames), idx + half)
             slice_frames = all_frames[start:end]
 
             items = []

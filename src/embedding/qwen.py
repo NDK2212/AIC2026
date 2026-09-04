@@ -138,12 +138,13 @@ class QwenTextEncoder(TextEncoder):
             ) from exc
 
         try:
+            target_device = "cpu" if str(self.cfg.device).lower() in ("cpu", "auto") else self.cfg.device
             self._tokenizer = AutoTokenizer.from_pretrained(self.cfg.model_id)
-            dtype = self._torch.float16 if (self.cfg.device != "cpu" and self._torch.cuda.is_available()) else getattr(self._torch, "bfloat16", self._torch.float32)
+            dtype = self._torch.float16 if (target_device != "cpu" and self._torch.cuda.is_available()) else getattr(self._torch, "bfloat16", self._torch.float32)
             try:
-                self._model = AutoModel.from_pretrained(self.cfg.model_id, torch_dtype=dtype, trust_remote_code=True).to(self.cfg.device).eval()
+                self._model = AutoModel.from_pretrained(self.cfg.model_id, torch_dtype=dtype, trust_remote_code=True, low_cpu_mem_usage=False).to(target_device).eval()
             except Exception:
-                self._model = AutoModel.from_pretrained(self.cfg.model_id, torch_dtype=self._torch.float32, trust_remote_code=True).to(self.cfg.device).eval()
+                self._model = AutoModel.from_pretrained(self.cfg.model_id, torch_dtype=self._torch.float32, trust_remote_code=True, low_cpu_mem_usage=False).to(target_device).eval()
             self._backend = "transformers"
         except Exception as exc:  # noqa: BLE001
             raise EncoderUnavailable(
@@ -172,6 +173,7 @@ class QwenTextEncoder(TextEncoder):
         # transformers fallback
         torch = self._torch
         import torch.nn.functional as F
+        target_device = getattr(self._model, "device", None) or ("cpu" if str(self.cfg.device).lower() in ("cpu", "auto") else self.cfg.device)
         with torch.inference_mode():
             inputs = self._tokenizer(
                 texts,
@@ -179,7 +181,7 @@ class QwenTextEncoder(TextEncoder):
                 truncation=True,
                 max_length=self.cfg.max_length,
                 return_tensors="pt",
-            ).to(self.cfg.device)
+            ).to(target_device)
             outputs = self._model(**inputs)
             if hasattr(outputs, "last_hidden_state"):
                 token_embeddings = outputs.last_hidden_state

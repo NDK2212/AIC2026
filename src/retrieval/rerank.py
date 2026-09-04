@@ -55,16 +55,16 @@ class BLIP2Reranker:
                         from transformers import BlipForImageTextRetrieval as ModelCls
 
                     self._processor = AutoProcessor.from_pretrained(self.cfg.model_id)
-                    model = ModelCls.from_pretrained(self.cfg.model_id)
-                    if str(self.cfg.device).lower() not in ("cpu", "auto"):
-                        try:
-                            model.to(self.cfg.device)
-                        except Exception:
-                            pass
+                    model = ModelCls.from_pretrained(self.cfg.model_id, low_cpu_mem_usage=False)
+                    target_device = "cpu" if str(self.cfg.device).lower() in ("cpu", "auto") else self.cfg.device
+                    try:
+                        model = model.to(target_device)
+                    except Exception as exc:
+                        log.warning("Could not move BLIP to %s: %s", target_device, exc)
                     model.eval()
                     self._model = model
                     self._torch = torch
-                    log.info("BLIP Reranker %s loaded on %s", self.cfg.model_id, self.cfg.device)
+                    log.info("BLIP Reranker %s loaded on %s", self.cfg.model_id, target_device)
                     return
                 except Exception as exc:  # noqa: BLE001
                     if attempt < 2:
@@ -120,14 +120,15 @@ class BLIP2Reranker:
                 chunk_imgs = [img for _, img in chunk]
                 chunk_texts = [query] * len(chunk_imgs)
                 try:
+                    target_device = getattr(self._model, "device", None) or ("cpu" if str(self.cfg.device).lower() in ("cpu", "auto") else self.cfg.device)
                     inputs = self._processor(
                         images=chunk_imgs, text=chunk_texts, padding=True, return_tensors="pt"
                     )
-                    inputs = {k: v.to(self.cfg.device) for k, v in inputs.items()}
+                    inputs = {k: v.to(target_device) for k, v in inputs.items()}
                     is_blip2 = "blip2" in str(self.cfg.model_id).lower() or "blip-2" in str(self.cfg.model_id).lower()
                     forward_kwargs = {"use_image_text_matching_head": True} if is_blip2 else {"use_itm_head": True}
                     with self._torch.inference_mode():
-                        if "cuda" in str(self.cfg.device):
+                        if "cuda" in str(target_device):
                             with self._torch.autocast(device_type="cuda", dtype=self._torch.float16):
                                 out = self._model(**inputs, **forward_kwargs)
                         else:
@@ -214,11 +215,16 @@ class BGEReranker:
                     from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
                     self._tokenizer = AutoTokenizer.from_pretrained(self.cfg.model_id)
-                    model = AutoModelForSequenceClassification.from_pretrained(self.cfg.model_id)
-                    model.eval().to(self.cfg.device)
+                    model = AutoModelForSequenceClassification.from_pretrained(self.cfg.model_id, low_cpu_mem_usage=False)
+                    target_device = "cpu" if str(self.cfg.device).lower() in ("cpu", "auto") else self.cfg.device
+                    try:
+                        model = model.to(target_device)
+                    except Exception as exc:
+                        log.warning("Could not move BGE to %s: %s", target_device, exc)
+                    model.eval()
                     self._model = model
                     self._torch = torch
-                    log.info("BGE Reranker %s loaded on %s", self.cfg.model_id, self.cfg.device)
+                    log.info("BGE Reranker %s loaded on %s", self.cfg.model_id, target_device)
                     return
                 except Exception as exc:  # noqa: BLE001
                     if attempt < 2:
@@ -313,7 +319,8 @@ class BGEReranker:
                 max_length=512,
                 return_tensors="pt",
             )
-            inputs = {k: v.to(self.cfg.device) for k, v in inputs.items()}
+            target_device = getattr(self._model, "device", None) or ("cpu" if str(self.cfg.device).lower() in ("cpu", "auto") else self.cfg.device)
+            inputs = {k: v.to(target_device) for k, v in inputs.items()}
             with self._torch.inference_mode():
                 out = self._model(**inputs, return_dict=True)
                 logits = out.logits.view(-1).float()
